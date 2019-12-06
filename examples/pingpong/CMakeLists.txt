@@ -1,0 +1,5 @@
+add_executable(pingpong_client tcp_client.cpp)
+target_link_libraries(pingpong_client coco_net)
+
+add_executable(pingpong_server tcp_server.cpp)
+target_link_libraries(pingpong_server coco_net)
