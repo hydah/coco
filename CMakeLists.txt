@@ -9,7 +9,7 @@ endif()
 
 # only build examples if this is the main project
 if(CMAKE_PROJECT_NAME STREQUAL "coco")
-  option(MUDUO_BUILD_EXAMPLES "Build coco examples" ON)
+  option(COCO_BUILD_EXAMPLES "Build coco examples" ON)
 endif()
 
 set(CXX_FLAGS
@@ -74,6 +74,6 @@ include_directories(${PROJECT_SOURCE_DIR})
 add_subdirectory(coco/base)
 add_subdirectory(coco/net)
 
-if(MUDUO_BUILD_EXAMPLES)
+if(COCO_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()

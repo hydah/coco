@@ -32,7 +32,7 @@ void ServerConn::dispose()
      * when delete the connection, stop the connection,
      * close the underlayer socket, delete the thread.
      */
-    close_stfd(stfd);
+    coco_close_stfd(stfd);
 }
 
 int ServerConn::start()
@@ -44,7 +44,7 @@ int ServerConn::cycle()
 {
     int ret = ERROR_SUCCESS;
 
-    id = get_stid();
+    id = coco_get_stid();
 
     // coco_trace("[TRACE_ANCHOR] SrsConnection: server=[%s:%d], client=[%s:%d]", local_ip.c_str(), local_port, ip.c_str(), port);
 

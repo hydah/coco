@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <string.h>
 #include "coco/base/log.hpp"
 
 FILE* osf = stdout;
@@ -73,7 +74,7 @@ std::string gen_log_header(int lvl, const char* basefile, int line, const char* 
             line,
             func,
             getpid(),
-            get_stid()
+            coco_get_stid()
             );
 
     return std::string(buffer);

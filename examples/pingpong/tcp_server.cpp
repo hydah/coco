@@ -35,14 +35,14 @@ int PingPongServerConn::do_cycle()
     while(true) {
         ret = skt->read(buf, sizeof(buf), &nread);
         if (ret != 0) {
-            cout << "read error" << endl;
+            coco_error("read error");
             return -1;
         }
         ssize_t wbytes = 0;
         while(wbytes < nread) {
             ret = skt->write(buf+wbytes, nread-wbytes, &nwrite);
             if(ret != 0) {
-                cout << "write error" << endl;
+                coco_error("write error");
                 return -1;
             }
             wbytes += nwrite;
@@ -60,12 +60,12 @@ ServerConn* tcp_acceptor(ConnMgr* mgr, st_netfd_t stfd)
 
 int main()
 {
-    st_init();
+    coco_st_init();
 
     TcpListener *listener  = new TcpListener(TCP_ACCEPTOR(tcp_acceptor), server_ip, port);
     listener->listen();
 
-    st_us_loop(1000*500);
+    coco_uloop(1000*500);
 
     delete listener;
     return 0;

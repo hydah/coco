@@ -2,8 +2,10 @@ set(
     COCO_BASE
 
     log.cpp
+    utils.cpp
     st_coroutine.cpp
     st_socket.cpp
+    error.cpp
   )
 
 add_library(coco_base ${COCO_BASE})

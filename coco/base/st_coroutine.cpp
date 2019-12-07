@@ -370,7 +370,7 @@ bool st_epoll_is_supported(void)
 }
 #endif
 
-int st_init()
+int coco_st_init()
 {
     int ret = ERROR_SUCCESS;
 
@@ -403,12 +403,24 @@ int st_init()
     return ret;
 }
 
-void close_stfd(st_netfd_t& stfd)
+void coco_close_stfd(st_netfd_t& stfd)
 {
     if (stfd) {
         // we must ensure the close is ok.
         assert(st_netfd_close(stfd) != -1);
         stfd = NULL;
     }
+}
+
+void coco_uloop(int64_t dur)
+{
+    while(true) {
+        st_usleep(dur);
+    }
+}
+
+int coco_get_stid()
+{
+    return internal::_st_context->get_id();
 }
 

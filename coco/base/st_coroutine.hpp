@@ -196,14 +196,14 @@ public:
     virtual void set_cycle_interval_us(int64_t interval_us);
 };
 
-extern int get_stid();
+extern int coco_get_stid();
 
 // initialize st, requires epoll.
-extern int st_init();
+extern int coco_st_init();
 
 // close the netfd, and close the underlayer fd.
 // @remark when close, user must ensure io completed.
-extern void close_stfd(st_netfd_t& stfd);
-extern void st_us_loop(int64_t dur);
+extern void coco_close_stfd(st_netfd_t& stfd);
+extern void coco_uloop(int64_t dur);
 
 #endif

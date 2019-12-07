@@ -4,7 +4,6 @@
 #include "coco/base/st_coroutine.hpp"
 #include "coco/base/st_socket.hpp"
 #include "coco/net/server.hpp"
-#include "coco/net/client.hpp"
 #include <string>
 
 typedef ServerConn* (*TCP_ACCEPTOR)(ConnMgr*, st_netfd_t);
@@ -30,13 +29,13 @@ public:
     virtual int cycle();
 };
 
-class TcpClient : public Client
+class TcpClient
 {
 private:
     int _fd;
     st_netfd_t _stfd;
 protected:
-    std::string ip;
+    std::string dst_server;
     int port;
     int64_t timeout;
     StSocket *skt;

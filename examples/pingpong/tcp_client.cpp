@@ -14,13 +14,13 @@ int port = 8080;
 class PingPongClient : public TcpClient
 {
 public:
-    PingPongClient(std::string server_ip, int port, int timeout) : TcpClient(server_ip, port, timeout) {};
-    virtual ~PingPongClient();
-    int write(char *buf, int s);
+    PingPongClient(std::string _server_ip, int _port, int _timeout) : TcpClient(_server_ip, _port, _timeout) {};
+    virtual ~PingPongClient() {};
+    int write(char *buf, ssize_t s);
     int read(char *buf, int s, ssize_t *nread);
 };
 
-int PingPongClient::write(char *buf, int s)
+int PingPongClient::write(char *buf, ssize_t s)
 {
     ssize_t wbytes = 0;
     ssize_t nwrite = 0;
@@ -28,7 +28,7 @@ int PingPongClient::write(char *buf, int s)
     while(wbytes < s) {
         ret = skt->write(buf+wbytes, s-wbytes, &nwrite);
         if(ret != 0) {
-            cout << "write error" << endl;
+            coco_trace("write error");
             break;
         }
         wbytes += nwrite;
@@ -44,7 +44,7 @@ int PingPongClient::read(char *buf, int s, ssize_t *nread)
 
 int main()
 {
-    st_init();
+    coco_st_init();
 
     PingPongClient *client = new PingPongClient(server_ip, port, 1000);
     client->connect();
@@ -55,14 +55,16 @@ int main()
     while(true) {
         ret = client->write(buf, nread);
         if (ret != 0) {
-            cout << "write error" << endl;
+            coco_warn("write error");
             break;
         }
+        coco_trace("write %s", buf);
         ret = client->read(buf, sizeof(buf), &nread);
         if (ret != 0) {
-            cout << "read error" << endl;
+            coco_warn("read error");
             break;
         }
+        coco_trace("read %s", buf);
     }
 
     delete client;
