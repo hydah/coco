@@ -192,7 +192,7 @@ int TcpClient::connect()
     _stfd = st_netfd_open_socket(_fd);
     if(_stfd == NULL){
         ret = ERROR_ST_OPEN_SOCKET;
-        coco_error("[FATAL_SOCKET_OPEN]st_netfd_open_socket failed. ret=%d", ret);
+        coco_error("st_netfd_open_socket failed. ret=%d", ret);
         ::close(_fd);
         freeaddrinfo(result);
         return ret;
@@ -203,13 +203,13 @@ int TcpClient::connect()
     std::string ip = ip_c;
     if (ip.empty()) {
         ret = ERROR_SYSTEM_IP_INVALID;
-        coco_error("[FATAL_DNS_RESOLVE]dns resolve server error[%s], ip empty. ret=%d", ip.c_str(), ret);
+        coco_error("dns resolve server error[%s], ip empty. ret=%d", ip.c_str(), ret);
         goto failed;
     }
 
     if (st_connect(_stfd, result->ai_addr, result->ai_addrlen, timeout) == -1){
         ret = ERROR_ST_CONNECT;
-        coco_error("[WARNING_3_CONNECT_SERVER]connect to server error. ip=%s, port=%d, ret=%d", ip_c, port, ret);
+        coco_error("connect to server error. ip=%s, port=%d, ret=%d", ip_c, port, ret);
         goto failed;
     }
 

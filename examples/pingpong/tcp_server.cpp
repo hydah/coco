@@ -65,7 +65,7 @@ int main()
     TcpListener *listener  = new TcpListener(TCP_ACCEPTOR(tcp_acceptor), server_ip, port);
     listener->listen();
 
-    coco_uloop(1000*500);
+    coco_uloop(1000*2000);
 
     delete listener;
     return 0;

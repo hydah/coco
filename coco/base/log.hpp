@@ -46,7 +46,7 @@ std::string gen_log_header(int log_level, const char* basefile, int line, const 
         { \
             if ((lvl) != log_dbg || (type) == dbg_user || (debug_mask & (type)) != 0) { \
                 std::string h = gen_log_header((lvl), basefile(__FILE__), __LINE__, __FUNCTION__); \
-                fprintf(osf, "%s\t " fmt "\n", \
+                fprintf(osf, "%s " fmt "\n", \
                         h.c_str(), \
                         ##__VA_ARGS__); \
                 fflush(osf); \

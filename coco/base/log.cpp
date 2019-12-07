@@ -27,7 +27,7 @@ std::string get_cur_time()
         }
     }
     char buffer[128];
-    snprintf(buffer, sizeof(buffer), "[%d-%02d-%02d %02d:%02d:%02d.%06lu]",
+    snprintf(buffer, sizeof(buffer), "%d-%02d-%02d %02d:%02d:%02d.%06lu",
              1900 + local.tm_year, 1 + local.tm_mon, local.tm_mday,
              local.tm_hour, local.tm_min, local.tm_sec, tv.tv_usec);
     return std::string(buffer);
@@ -68,14 +68,13 @@ std::string bin2hex(const char* data, size_t length, const std::string& split)
 std::string gen_log_header(int lvl, const char* basefile, int line, const char* func)
 {
     char buffer[128];
-    snprintf(buffer, sizeof(buffer), "[%s]%s:%d:(%s) [%d][%d]",
-            get_cur_time().c_str(),
-            basefile,
-            line,
-            func,
-            getpid(),
-            coco_get_stid()
-            );
+    snprintf(buffer, sizeof(buffer), "[%s][%s:%s:%d][%d][%d]",
+             get_cur_time().c_str(),
+             basefile,
+             func,
+             line,
+             getpid(),
+             coco_get_stid());
 
     return std::string(buffer);
 }

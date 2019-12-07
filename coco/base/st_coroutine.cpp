@@ -415,6 +415,7 @@ void coco_close_stfd(st_netfd_t& stfd)
 void coco_uloop(int64_t dur)
 {
     while(true) {
+        coco_info("sleep %ld us", dur);
         st_usleep(dur);
     }
 }

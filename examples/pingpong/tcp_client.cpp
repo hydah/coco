@@ -44,12 +44,17 @@ int PingPongClient::read(char *buf, int s, ssize_t *nread)
 
 int main()
 {
+    int ret = ERROR_SUCCESS;
+
     coco_st_init();
 
     PingPongClient *client = new PingPongClient(server_ip, port, 1000);
-    client->connect();
+    ret = client->connect();
+    if (ret != ERROR_SUCCESS) {
+        coco_error("connect server: %s:%d failed", server_ip.c_str(), port);
+        return ret;
+    }
 
-    int ret = 0;
     char buf[1024] = "hello coco";
     ssize_t nread = 10;
     while(true) {
