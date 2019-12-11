@@ -8,6 +8,7 @@
 FILE* osf = stdout;
 uint64_t debug_mask = 0;
 int log_level = log_trace;
+int cur_pid = getpid();
 
 std::string get_cur_time()
 {
@@ -73,7 +74,7 @@ std::string gen_log_header(int lvl, const char* basefile, int line, const char* 
              basefile,
              func,
              line,
-             getpid(),
+             cur_pid,
              coco_get_stid());
 
     return std::string(buffer);

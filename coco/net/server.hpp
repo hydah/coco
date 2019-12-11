@@ -72,6 +72,11 @@ protected:
 };
 
 
+/*
+ * user defined Listen object should inherited from this
+ * to delete conn object
+ */
+
 class ConnMgr
 {
 private:

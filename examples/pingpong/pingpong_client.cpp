@@ -1,24 +1,46 @@
-#include "coco/net/tcp_stack.hpp"
-#include "coco/net/server.hpp"
+// #include "coco/net/tcp_stack.hpp"
+// #include "coco/net/server.hpp"
 #include <iostream>
 #include "coco/base/log.hpp"
 #include <string>
 #include "coco/base/st_socket.hpp"
 #include "coco/base/error.hpp"
+#include "coco/net/net.hpp"
 
 using namespace std;
 
 string server_ip = "127.0.0.1";
 int port = 8080;
 
-class PingPongClient : public TcpClient
+class PingPongClient
 {
+private:
+    Conn *conn;
+    std::string dst_ip;
+    int dst_port;
+    int timeout;
 public:
-    PingPongClient(std::string _server_ip, int _port, int _timeout) : TcpClient(_server_ip, _port, _timeout) {};
+    PingPongClient(std::string _server_ip, int _port, int _timeout);
     virtual ~PingPongClient() {};
+    int connect();
     int write(char *buf, ssize_t s);
     int read(char *buf, int s, ssize_t *nread);
 };
+
+PingPongClient::PingPongClient(std::string _server_ip, int _port, int _timeout)
+{
+    dst_ip = _server_ip;
+    dst_port = _port;
+    timeout = _timeout;
+}
+int PingPongClient::connect()
+{
+    conn = dial_tcp(dst_ip, dst_port, timeout);
+    if (conn == NULL) {
+        return -1;
+    }
+    return 0;
+}
 
 int PingPongClient::write(char *buf, ssize_t s)
 {
@@ -26,7 +48,7 @@ int PingPongClient::write(char *buf, ssize_t s)
     ssize_t nwrite = 0;
     int ret = 0;
     while(wbytes < s) {
-        ret = skt->write(buf+wbytes, s-wbytes, &nwrite);
+        ret = conn->write(buf+wbytes, s-wbytes, &nwrite);
         if(ret != 0) {
             coco_trace("write error");
             break;
@@ -39,7 +61,7 @@ int PingPongClient::write(char *buf, ssize_t s)
 
 int PingPongClient::read(char *buf, int s, ssize_t *nread)
 {
-    return skt->read(buf, s, nread);
+    return conn->read(buf, s, nread);
 }
 
 int main()

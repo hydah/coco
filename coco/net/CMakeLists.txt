@@ -3,8 +3,10 @@ include(CheckFunctionExists)
 set(
     COCO_NET
 
-    server.cpp
-    tcp_stack.cpp
+    net.cpp
+    # conn_mgr.cpp
+    # server.cpp
+    # tcp_stack.cpp
   )
 
 add_library(coco_net ${COCO_NET})
@@ -15,8 +17,6 @@ install(TARGETS coco_net DESTINATION lib)
 set(
     COCO_NET_HEADERS
 
-    server.hpp
-    tcp_stack.hpp
-    client.hpp
+    net.hpp
 )
 install(FILES ${COCO_NET_HEADERS} DESTINATION include/coco/net)
