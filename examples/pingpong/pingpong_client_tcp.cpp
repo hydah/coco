@@ -15,7 +15,7 @@ int port = 8080;
 class PingPongClient
 {
 private:
-    Conn *conn;
+    TcpConn *conn;
     std::string dst_ip;
     int dst_port;
     int timeout;

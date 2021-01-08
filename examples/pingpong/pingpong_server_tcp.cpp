@@ -15,9 +15,9 @@ class PingPongServer : public ConnRoutine
 {
 private:
     ConnMgr<PingPongServer> *mgr;
-    Conn *conn;
+    TcpConn *conn;
 public:
-    PingPongServer(ConnMgr<PingPongServer> *_mgr, Conn *_conn);
+    PingPongServer(ConnMgr<PingPongServer> *_mgr, TcpConn *_conn);
     virtual ~PingPongServer();
 
 public:
@@ -25,7 +25,7 @@ public:
     virtual void on_coroutine_stop();
 };
 
-PingPongServer::PingPongServer(ConnMgr<PingPongServer> *_mgr, Conn *_conn)
+PingPongServer::PingPongServer(ConnMgr<PingPongServer> *_mgr, TcpConn *_conn)
 {
     conn = _conn;
     mgr = _mgr;
@@ -71,15 +71,15 @@ void PingPongServer::on_coroutine_stop()
 class PingPongListener : public ListenRoutine, public ConnMgr<PingPongServer>
 {
 private:
-    Listener *l;
+    TcpListener *l;
 public:
-    PingPongListener(Listener *_l);
+    PingPongListener(TcpListener *_l);
     virtual ~PingPongListener();
 public:
     virtual int cycle();
 };
 
-PingPongListener::PingPongListener(Listener *_l)
+PingPongListener::PingPongListener(TcpListener *_l)
 {
     l = _l;
 }
@@ -94,7 +94,7 @@ PingPongListener::~PingPongListener()
 int PingPongListener::cycle()
 {
     while(true) {
-        Conn* _conn = l->accept();
+        TcpConn* _conn = l->accept();
         PingPongServer *pserver = new PingPongServer(this, _conn);
         push(pserver);
 
@@ -108,7 +108,7 @@ int main()
     log_level = log_dbg;
     coco_st_init();
 
-    Listener *l = listen_tcp(local_ip, port);
+    TcpListener *l = listen_tcp(local_ip, port);
     if (l == NULL) {
         coco_error("create listen socket failed");
         return -1;

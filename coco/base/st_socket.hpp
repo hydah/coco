@@ -39,7 +39,10 @@ public:
      */
     virtual int write(void* buf, size_t size, ssize_t* nwrite);
     virtual int writev(const iovec *iov, int iov_size, ssize_t* nwrite);
+
+    virtual int recvfrom(void *buf, int size, ssize_t* nread, struct sockaddr *from, int *fromlen);
+    virtual int sendto(void *buf, int size, ssize_t* nwrite, struct sockaddr *to, int tolen);
+    virtual int recvmsg(ssize_t* nread, struct msghdr *msg, int flags);
+    virtual int sendmsg(ssize_t* nwrite, struct msghdr *msg, int flags);
 };
-
 #endif
-

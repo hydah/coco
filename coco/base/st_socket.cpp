@@ -163,3 +163,113 @@ int StSocket::writev(const iovec *iov, int iov_size, ssize_t* nwrite)
 
     return ret;
 }
+
+int StSocket::recvfrom(void *buf, int size, ssize_t* nread, struct sockaddr *from, int *fromlen)
+{
+    int ret = ERROR_SUCCESS;
+
+    ssize_t nb_read = st_recvfrom(stfd, buf, size, from, fromlen, recv_timeout);
+    if (nread) {
+        *nread = nb_read;
+    }
+
+    // On success a non-negative integer indicating the number of bytes actually read is returned
+    // (a value of 0 means the network connection is closed or end of file is reached).
+    // Otherwise, a value of -1 is returned and errno is set to indicate the error.
+    if (nb_read <= 0) {
+        // @see https://github.com/ossrs/srs/issues/200
+        if (nb_read < 0 && errno == ETIME) {
+            return ERROR_SOCKET_TIMEOUT;
+        }
+
+        if (nb_read == 0) {
+            errno = ECONNRESET;
+        }
+
+        return ERROR_SOCKET_READ;
+    }
+
+    recv_bytes += nb_read;
+
+    return ret;
+}
+
+int StSocket::sendto(void *buf, int size, ssize_t* nwrite, struct sockaddr *to, int tolen)
+{
+    int ret = ERROR_SUCCESS;
+
+    ssize_t nb_write = st_sendto(stfd, buf, size, to, tolen, send_timeout);
+    if (nwrite) {
+        *nwrite = nb_write;
+    }
+
+    // On success a non-negative integer equal to nbyte is returned.
+    // Otherwise, a value of -1 is returned and errno is set to indicate the error.
+    if (nb_write <= 0) {
+        // @see https://github.com/ossrs/srs/issues/200
+        if (nb_write < 0 && errno == ETIME) {
+            return ERROR_SOCKET_TIMEOUT;
+        }
+
+        return ERROR_SOCKET_WRITE;
+    }
+
+    send_bytes += nb_write;
+
+    return ret;
+}
+
+int StSocket::recvmsg(ssize_t* nread, struct msghdr *msg, int flags)
+{
+    int ret = ERROR_SUCCESS;
+
+    ssize_t nb_read = st_recvmsg(stfd, msg, flags, recv_timeout);
+    if (nread) {
+        *nread = nb_read;
+    }
+
+    // On success a non-negative integer indicating the number of bytes actually read is returned
+    // (a value of 0 means the network connection is closed or end of file is reached).
+    // Otherwise, a value of -1 is returned and errno is set to indicate the error.
+    if (nb_read <= 0) {
+        // @see https://github.com/ossrs/srs/issues/200
+        if (nb_read < 0 && errno == ETIME) {
+            return ERROR_SOCKET_TIMEOUT;
+        }
+
+        if (nb_read == 0) {
+            errno = ECONNRESET;
+        }
+
+        return ERROR_SOCKET_READ;
+    }
+
+    recv_bytes += nb_read;
+
+    return ret;
+}
+
+int StSocket::sendmsg(ssize_t* nwrite, struct msghdr *msg, int flags)
+{
+    int ret = ERROR_SUCCESS;
+
+    ssize_t nb_write = st_sendmsg(stfd, msg, flags, send_timeout);
+    if (nwrite) {
+        *nwrite = nb_write;
+    }
+
+    // On success a non-negative integer equal to nbyte is returned.
+    // Otherwise, a value of -1 is returned and errno is set to indicate the error.
+    if (nb_write <= 0) {
+        // @see https://github.com/ossrs/srs/issues/200
+        if (nb_write < 0 && errno == ETIME) {
+            return ERROR_SOCKET_TIMEOUT;
+        }
+
+        return ERROR_SOCKET_WRITE;
+    }
+
+    send_bytes += nb_write;
+
+    return ret;
+}

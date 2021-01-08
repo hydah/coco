@@ -4,55 +4,9 @@
 #include <vector>
 #include <algorithm>
 #include "coco/base/st_socket.hpp"
+#include <unistd.h>
 
-class Conn
-{
-public:
-    Conn();
-    virtual ~Conn();
-public:
-    /**
-     * @param nread, the actual read bytes, ignore if NULL.
-     */
-    virtual int read(void* buf, size_t size, ssize_t* nread) = 0;
-    virtual int read_fully(void* buf, size_t size, ssize_t* nread) = 0;
-    /**
-     * @param nwrite, the actual write bytes, ignore if NULL.
-     */
-    virtual int write(void* buf, size_t size, ssize_t* nwrite) = 0;
-    virtual int writev(const iovec *iov, int iov_size, ssize_t* nwrite) = 0;
-    virtual st_netfd_t get_stfd() = 0;
-};
-
-class Listener
-{
-public:
-    Listener();
-    virtual ~Listener();
-public:
-    virtual int close() = 0;
-    virtual Conn* accept() = 0;
-    virtual std::string addr() = 0;
-    virtual st_netfd_t get_stfd()=0;
-};
-
-
-class TcpListener : public Listener
-{
-private:
-    Conn* conn;
-public:
-    TcpListener(Conn *_conn);
-    virtual ~TcpListener();
-
-public:
-    virtual int close() {return 0;};
-    virtual Conn* accept();
-    virtual std::string addr();
-    virtual st_netfd_t get_stfd();
-};
-
-class TcpConn : public Conn
+class TcpConn
 {
 private:
     st_netfd_t _stfd;
@@ -74,6 +28,22 @@ public:
     virtual int writev(const iovec *iov, int iov_size, ssize_t *nwrite);
     virtual st_netfd_t get_stfd();
 };
+
+class TcpListener
+{
+private:
+    TcpConn* conn;
+public:
+    TcpListener(TcpConn *_conn);
+    virtual ~TcpListener();
+
+public:
+    virtual int close() {return 0;};
+    virtual TcpConn* accept();
+    virtual std::string addr();
+    virtual st_netfd_t get_stfd();
+};
+
 
 template <class T>
 class ConnMgr
@@ -193,6 +163,47 @@ protected:
 };
 
 
-extern Listener* listen_tcp(std::string local_ip, int local_port);
-extern Conn* dial_tcp(std::string dst_ip, int dst_port, int timeout);
-#endif
+class UdpConn
+{
+private:
+    st_netfd_t _stfd;
+    StSocket* skt;
+    struct sockaddr *dst_addr;
+    int dst_addr_len;
+
+public:
+    UdpConn(st_netfd_t _stfd);
+    UdpConn(st_netfd_t _stfd, struct sockaddr* _addr, socklen_t len);
+    virtual ~UdpConn();
+public:
+    virtual int recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
+    virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
+    virtual int read(void *buf, int size, ssize_t *nread);
+    virtual int write(void *buf, int size, ssize_t *nwrite);
+    virtual st_netfd_t get_stfd();
+};
+class UdpListener
+{
+private:
+    UdpConn* conn;
+public:
+    UdpListener(UdpConn* _conn);
+    virtual ~UdpListener();
+
+public:
+    virtual int close() {return 0;};
+    virtual UdpConn* accept() {return NULL;}; // not support accept now
+    virtual std::string addr();
+    virtual st_netfd_t get_stfd();
+
+    virtual int recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
+    virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
+};
+
+extern TcpListener* listen_tcp(std::string local_ip, int local_port);
+extern TcpConn* dial_tcp(std::string dst_ip, int dst_port, int timeout);
+
+extern UdpListener* listen_udp(std::string local_ip, int local_port);
+extern UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout);
+
+#endif // end of NET_NET_HPP

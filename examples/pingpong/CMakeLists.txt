@@ -1,5 +1,11 @@
-add_executable(pingpong_client pingpong_client.cpp)
-target_link_libraries(pingpong_client coco_net)
+add_executable(pingpong_client_tcp pingpong_client_tcp.cpp)
+target_link_libraries(pingpong_client_tcp coco_net)
 
-add_executable(pingpong_server pingpong_server.cpp)
-target_link_libraries(pingpong_server coco_net)
+add_executable(pingpong_server_tcp pingpong_server_tcp.cpp)
+target_link_libraries(pingpong_server_tcp coco_net)
+
+add_executable(pingpong_client_udp pingpong_client_udp.cpp)
+target_link_libraries(pingpong_client_udp coco_net)
+
+add_executable(pingpong_server_udp pingpong_server_udp.cpp)
+target_link_libraries(pingpong_server_udp coco_net)
