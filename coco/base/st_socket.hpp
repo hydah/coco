@@ -3,12 +3,13 @@
 
 #include "st/obj/st.h"
 #include "coco/base/st_coroutine.hpp"
+#include "coco/base/utils.hpp"
 
 /**
  * the socket provides TCP socket over st,
  * that is, the sync socket mechanism.
  */
-class StSocket
+class StSocket : public IBufferReader, public IBufferWriter
 {
 private:
     int64_t recv_timeout;

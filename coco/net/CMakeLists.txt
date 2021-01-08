@@ -4,6 +4,7 @@ set(
     COCO_NET
 
     net.cpp
+    http_stack.cpp
     # conn_mgr.cpp
     # server.cpp
     # tcp_stack.cpp
@@ -18,5 +19,6 @@ set(
     COCO_NET_HEADERS
 
     net.hpp
+    http_stack.hpp
 )
 install(FILES ${COCO_NET_HEADERS} DESTINATION include/coco/net)

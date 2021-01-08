@@ -72,6 +72,25 @@
 #define ERROR_ST_SSL_HANDSHAKE              1061
 #endif
 
+#define ERROR_HTTP_PARSE_URI                3007
+#define ERROR_HTTP_DATA_INVALID             3008
+#define ERROR_HTTP_PARSE_HEADER             3009
+#define ERROR_HTTP_HANDLER_MATCH_URL        3010
+#define ERROR_HTTP_HANDLER_INVALID          3011
+#define ERROR_HTTP_API_LOGS                 3012
+#define ERROR_HTTP_REMUX_SEQUENCE_HEADER      3013
+#define ERROR_HTTP_REMUX_OFFSET_OVERFLOW      3014
+
+#define ERROR_HTTP_PATTERN_EMPTY            4000
+#define ERROR_HTTP_PATTERN_DUPLICATED       4001
+#define ERROR_HTTP_URL_NOT_CLEAN            4002
+#define ERROR_HTTP_CONTENT_LENGTH           4003
+#define ERROR_HTTP_LIVE_STREAM_EXT          4004
+#define ERROR_HTTP_STATUS_INVALID           4005
+#define ERROR_HTTP_RESPONSE_EOF             4025
+#define ERROR_HTTP_INVALID_CHUNK_HEADER     4026
+#define ERROR_HTTP_REQUEST_EOF              4029
+
 extern bool coco_is_client_gracefully_close(int error_code);
 
 #endif

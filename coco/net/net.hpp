@@ -1,10 +1,11 @@
 #ifndef NET_NET_HPP
 #define NET_NET_HPP
+
 #include <string>
 #include <vector>
 #include <algorithm>
-#include "coco/base/st_socket.hpp"
 #include <unistd.h>
+#include "coco/base/st_socket.hpp"
 
 class TcpConn
 {
@@ -27,6 +28,7 @@ public:
     virtual int write(void *buf, size_t size, ssize_t *nwrite);
     virtual int writev(const iovec *iov, int iov_size, ssize_t *nwrite);
     virtual st_netfd_t get_stfd();
+    virtual StSocket* getStSocket() { return skt;};
 };
 
 class TcpListener
@@ -44,6 +46,8 @@ public:
     virtual st_netfd_t get_stfd();
 };
 
+extern TcpListener* listen_tcp(std::string local_ip, int local_port);
+extern TcpConn* dial_tcp(std::string dst_ip, int dst_port, int timeout);
 
 template <class T>
 class ConnMgr
@@ -199,9 +203,6 @@ public:
     virtual int recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
     virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
 };
-
-extern TcpListener* listen_tcp(std::string local_ip, int local_port);
-extern TcpConn* dial_tcp(std::string dst_ip, int dst_port, int timeout);
 
 extern UdpListener* listen_udp(std::string local_ip, int local_port);
 extern UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout);

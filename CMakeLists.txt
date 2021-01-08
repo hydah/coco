@@ -71,8 +71,30 @@ install(FILES ${ST_OBJ_DIR}/st.h DESTINATION include)
 install(FILES ${ST_OBJ_DIR}/libst.a DESTINATION lib)
 
 include_directories(${PROJECT_SOURCE_DIR})
-add_subdirectory(coco/base)
-add_subdirectory(coco/net)
+set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
+include_directories(${THIRDPARTY}/http-parser)
+
+set(
+    COCO_BASE
+
+    coco/base/log.cpp
+    coco/base/utils.cpp
+    coco/base/st_coroutine.cpp
+    coco/base/st_socket.cpp
+    coco/base/error.cpp
+  )
+
+set(
+  COCO_NET
+
+  coco/net/net.cpp
+  coco/net/http_stack.cpp
+)
+# add_subdirectory(coco/base)
+# add_subdirectory(coco/net)
+
+add_library(coco ${COCO_NET} ${COCO_BASE} ${THIRDPARTY}/http-parser/http_parser.c)
+target_link_libraries(coco ${LIB_ST})
 
 if(COCO_BUILD_EXAMPLES)
   add_subdirectory(examples)

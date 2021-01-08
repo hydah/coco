@@ -142,7 +142,7 @@ int ConnRoutine::cycle()
 
     id = coco_get_stid();
 
-    // coco_trace("[TRACE_ANCHOR] SrsConnection: server=[%s:%d], client=[%s:%d]", local_ip.c_str(), local_port, ip.c_str(), port);
+    coco_trace("[TRACE_ANCHOR] Connection");
 
     ret = do_cycle();
 
