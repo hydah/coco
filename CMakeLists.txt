@@ -55,7 +55,7 @@ string(TOUPPER ${CMAKE_BUILD_TYPE} BUILD_TYPE)
 message(STATUS "CXX_FLAGS = " ${CMAKE_CXX_FLAGS} " " ${CMAKE_CXX_FLAGS_${BUILD_TYPE}})
 
 # st lib
-message("generate st lib")
+message("generate st lib" ${PROJECT_SOURCE_DIR}/st/obj)
 set(ST_OBJ_DIR ${PROJECT_SOURCE_DIR}/st/obj)
 if (${ST_OBJ_DIR}/libst.a)
         message("st-1.9t is ok.")

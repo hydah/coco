@@ -1,22 +1,22 @@
 #ifndef NET_NET_HPP
 #define NET_NET_HPP
 
+#include <unistd.h>
+#include <algorithm>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <unistd.h>
 #include "coco/base/st_socket.hpp"
 
-class TcpConn
-{
-private:
+class TcpConn {
+ private:
     st_netfd_t _stfd;
-    StSocket* skt;
+    StSocket *skt;
 
-public:
+ public:
     TcpConn(st_netfd_t _stfd);
     virtual ~TcpConn();
-public:
+
+ public:
     /**
      * @param nread, the actual read bytes, ignore if NULL.
      */
@@ -28,38 +28,36 @@ public:
     virtual int write(void *buf, size_t size, ssize_t *nwrite);
     virtual int writev(const iovec *iov, int iov_size, ssize_t *nwrite);
     virtual st_netfd_t get_stfd();
-    virtual StSocket* getStSocket() { return skt;};
+    virtual StSocket *getStSocket() { return skt; };
 };
 
-class TcpListener
-{
-private:
-    TcpConn* conn;
-public:
+class TcpListener {
+ private:
+    TcpConn *conn;
+
+ public:
     TcpListener(TcpConn *_conn);
     virtual ~TcpListener();
 
-public:
-    virtual int close() {return 0;};
-    virtual TcpConn* accept();
+ public:
+    virtual int close() { return 0; };
+    virtual TcpConn *accept();
     virtual std::string addr();
     virtual st_netfd_t get_stfd();
 };
 
-extern TcpListener* listen_tcp(std::string local_ip, int local_port);
-extern TcpConn* dial_tcp(std::string dst_ip, int dst_port, int timeout);
+extern TcpListener *listen_tcp(std::string local_ip, int local_port);
+extern TcpConn *dial_tcp(std::string dst_ip, int dst_port, int timeout);
 
 template <class T>
-class ConnMgr
-{
-protected:
-    std::vector<T*> conns;
+class ConnMgr {
+ protected:
+    std::vector<T *> conns;
 
-public:
+ public:
     ConnMgr(){};
-    virtual ~ConnMgr()
-    {
-        typename std::vector<T*>::iterator it;
+    virtual ~ConnMgr() {
+        typename std::vector<T *>::iterator it;
         for (it = conns.begin(); it != conns.end(); it = it++) {
             if (*it != NULL) {
                 delete *it;
@@ -67,15 +65,13 @@ public:
         }
         conns.clear();
     };
-public:
-    virtual void push(T* conn)
-    {
-        conns.push_back(conn);
-    };
-public:
-    virtual void remove(T* conn)
-    {
-         typename std::vector<T*>::iterator it = std::find(conns.begin(), conns.end(), conn);
+
+ public:
+    virtual void push(T *conn) { conns.push_back(conn); };
+
+ public:
+    virtual void remove(T *conn) {
+        typename std::vector<T *>::iterator it = std::find(conns.begin(), conns.end(), conn);
 
         // removed by destroy, ignore.
         if (it == conns.end()) {
@@ -94,109 +90,113 @@ public:
     };
 };
 
-class ListenRoutine : public IStCoroutineHandler
-{
-private:
-    StReusableCoroutine* coroutine;
+class ListenRoutine : public IStCoroutineHandler {
+ private:
+    StReusableCoroutine *coroutine;
 
-public:
+ public:
     ListenRoutine();
     virtual ~ListenRoutine();
-public:
+
+ public:
     virtual int cycle() = 0;
     virtual int start();
 };
 
-class ConnRoutine : public IStCoroutineHandler
-{
-private:
+class ConnRoutine : public IStCoroutineHandler {
+ private:
     /**
-    * each connection start a green thread,
-    * when thread stop, the connection will be delete by server.
-    */
-    StOneCycleCoroutine* coroutine;
+     * each connection start a green thread,
+     * when thread stop, the connection will be delete by server.
+     */
+    StOneCycleCoroutine *coroutine;
     /**
-    * the id of connection.
-    */
+     * the id of connection.
+     */
     int id;
 
-protected:
-     /**
+ protected:
+    /**
      * whether the connection is disposed,
      * when disposed, connection should stop cycle and cleanup itself.
      */
     bool disposed;
 
-public:
+ public:
     ConnRoutine();
     virtual ~ConnRoutine();
-public:
+
+ public:
     /**
      * to dipose the connection.
      */
     virtual void dispose();
     /**
-    * start the client green thread.
-    * when server get a client from listener,
-    * 1. server will create an concrete connection(for instance, RTMP connection),
-    * 2. then add connection to its connection manager,
-    * 3. start the client thread by invoke this start()
-    * when client cycle thread stop, invoke the on_thread_stop(), which will use server
-    * to remove the client by server->remove(this).
-    */
+     * start the client green thread.
+     * when server get a client from listener,
+     * 1. server will create an concrete connection(for instance, RTMP connection),
+     * 2. then add connection to its connection manager,
+     * 3. start the client thread by invoke this start()
+     * when client cycle thread stop, invoke the on_thread_stop(), which will use server
+     * to remove the client by server->remove(this).
+     */
     virtual int start();
-// interface ISrsOneCycleThreadHandler
-public:
+    // interface ISrsOneCycleThreadHandler
+ public:
     /**
-    * the thread cycle function,
-    * when serve connection completed, terminate the loop which will terminate the thread,
-    * thread will invoke the on_thread_stop() when it terminated.
-    */
+     * the thread cycle function,
+     * when serve connection completed, terminate the loop which will terminate the thread,
+     * thread will invoke the on_thread_stop() when it terminated.
+     */
     virtual int cycle();
     /**
-    * when the coroutine cycle finished, thread will invoke the on_coroutine_stop(),
-    * which will remove self from server, server will remove the connection from manager
-    * then delete the connection.
-    */
+     * when the coroutine cycle finished, thread will invoke the on_coroutine_stop(),
+     * which will remove self from server, server will remove the connection from manager
+     * then delete the connection.
+     */
     virtual void on_coroutine_stop() = 0;
-protected:
+
+ protected:
     /**
-    * for concrete connection to do the cycle.
-    */
+     * for concrete connection to do the cycle.
+     */
     virtual int do_cycle() = 0;
 };
 
-
-class UdpConn
-{
-private:
+class UdpConn {
+ private:
     st_netfd_t _stfd;
-    StSocket* skt;
+    StSocket *skt;
     struct sockaddr *dst_addr;
     int dst_addr_len;
 
-public:
+ public:
     UdpConn(st_netfd_t _stfd);
-    UdpConn(st_netfd_t _stfd, struct sockaddr* _addr, socklen_t len);
+    UdpConn(st_netfd_t _stfd, struct sockaddr *_addr, socklen_t len);
     virtual ~UdpConn();
-public:
+
+ public:
     virtual int recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
     virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
     virtual int read(void *buf, int size, ssize_t *nread);
     virtual int write(void *buf, int size, ssize_t *nwrite);
     virtual st_netfd_t get_stfd();
+    virtual void set_timeout(int64_t timeout_us) {
+        skt->set_send_timeout(timeout_us);
+        skt->set_recv_timeout(timeout_us);
+    };
 };
-class UdpListener
-{
-private:
-    UdpConn* conn;
-public:
-    UdpListener(UdpConn* _conn);
+class UdpListener {
+ private:
+    UdpConn *conn;
+
+ public:
+    UdpListener(UdpConn *_conn);
     virtual ~UdpListener();
 
-public:
-    virtual int close() {return 0;};
-    virtual UdpConn* accept() {return NULL;}; // not support accept now
+ public:
+    virtual int close() { return 0; };
+    virtual UdpConn *accept() { return NULL; };  // not support accept now
     virtual std::string addr();
     virtual st_netfd_t get_stfd();
 
@@ -204,7 +204,7 @@ public:
     virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
 };
 
-extern UdpListener* listen_udp(std::string local_ip, int local_port);
-extern UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout);
+extern UdpListener *listen_udp(std::string local_ip, int local_port);
+extern UdpConn *dial_udp(std::string dst_ip, int dst_port, int timeout);
 
-#endif // end of NET_NET_HPP
+#endif  // end of NET_NET_HPP

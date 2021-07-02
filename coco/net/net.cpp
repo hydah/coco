@@ -463,7 +463,8 @@ UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout)
     int ret = ERROR_SUCCESS;
     int _fd = -1;
     st_netfd_t _stfd = NULL;
-    coco_trace("port is %d", dst_port);
+    UdpConn* conn = nullptr;
+    coco_trace("ip: %s, port is %d", dst_ip.c_str(), dst_port);
 
 
     char port_string[8];
@@ -520,8 +521,9 @@ UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout)
         goto failed;
     }
 
-
-    return new UdpConn(_stfd, result->ai_addr, result->ai_addrlen);
+    conn = new UdpConn(_stfd, result->ai_addr, result->ai_addrlen);
+    conn->set_timeout(timeout);
+    return conn;
 
 failed:
     coco_close_stfd(_stfd);
