@@ -185,6 +185,8 @@ class UdpConn {
         skt->set_send_timeout(timeout_us);
         skt->set_recv_timeout(timeout_us);
     };
+    virtual void set_recv_timeout(int64_t timeout_us) { skt->set_recv_timeout(timeout_us); };
+    virtual void set_send_timeout(int64_t timeout_us) { skt->set_send_timeout(timeout_us); };
 };
 class UdpListener {
  private:
@@ -202,6 +204,8 @@ class UdpListener {
 
     virtual int recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
     virtual int sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
+    virtual void set_recv_timeout(int64_t timeout_us) { conn->set_recv_timeout(timeout_us); };
+    virtual void set_send_timeout(int64_t timeout_us) { conn->set_send_timeout(timeout_us); };
 };
 
 extern UdpListener *listen_udp(std::string local_ip, int local_port);

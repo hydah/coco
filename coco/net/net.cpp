@@ -464,7 +464,7 @@ UdpConn* dial_udp(std::string dst_ip, int dst_port, int timeout)
     int _fd = -1;
     st_netfd_t _stfd = NULL;
     UdpConn* conn = nullptr;
-    coco_trace("ip: %s, port is %d", dst_ip.c_str(), dst_port);
+    // coco_trace("ip: %s, port is %d", dst_ip.c_str(), dst_port);
 
 
     char port_string[8];
