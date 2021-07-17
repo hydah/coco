@@ -1,123 +1,112 @@
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
-#include "coco/base/log.hpp"
-#include "coco/base/st_socket.hpp"
-#include "coco/base/error.hpp"
-#include "coco/net/net.hpp"
+
+#include "coco_api.h"
+#include "common/error.hpp"
+#include "log/log.hpp"
+#include "net/coco_socket.hpp"
+#include "net/layer4/coco_tcp.hpp"
 
 using namespace std;
 
 string local_ip = "127.0.0.1";
 int port = 8080;
 
-class PingPongServer : public ConnRoutine
-{
-private:
-    ConnMgr<PingPongServer> *mgr;
-    TcpConn *conn;
-public:
-    PingPongServer(ConnMgr<PingPongServer> *_mgr, TcpConn *_conn);
-    virtual ~PingPongServer();
+class PingPongServer : public ConnRoutine {
 
 public:
-    virtual int do_cycle();
-    virtual void on_coroutine_stop();
+  PingPongServer(ConnManager *mgr, std::unique_ptr<TcpConn> conn);
+  virtual ~PingPongServer() = default;
+
+  virtual int DoCycle();
+
+private:
+  std::unique_ptr<TcpConn> conn_;
 };
 
-PingPongServer::PingPongServer(ConnMgr<PingPongServer> *_mgr, TcpConn *_conn)
-{
-    conn = _conn;
-    mgr = _mgr;
+PingPongServer::PingPongServer(ConnManager *mgr, std::unique_ptr<TcpConn> conn)
+    : ConnRoutine(mgr) {
+  conn_ = std::move(conn);
 }
 
-PingPongServer::~PingPongServer()
-{
-    if(conn) {
-        delete conn;
+int PingPongServer::DoCycle() {
+  char buf[1024];
+  ssize_t nread = 0;
+  ssize_t nwrite = 0;
+  int ret = 0;
+  while (true) {
+    ret = conn_->Read(buf, sizeof(buf), &nread);
+    if (ret != 0) {
+      coco_error("read error");
+      return -1;
     }
-}
-
-int PingPongServer::do_cycle()
-{
-    char buf[1024];
-    ssize_t nread = 0;
-    ssize_t nwrite = 0;
-    int ret = 0;
-    while(true) {
-        ret = conn->read(buf, sizeof(buf), &nread);
-        if (ret != 0) {
-            coco_error("read error");
-            return -1;
-        }
-        ssize_t wbytes = 0;
-        while(wbytes < nread) {
-            ret = conn->write(buf+wbytes, nread-wbytes, &nwrite);
-            if(ret != 0) {
-                coco_error("write error");
-                return -1;
-            }
-            wbytes += nwrite;
-        }
-    }
-}
-
-void PingPongServer::on_coroutine_stop()
-{
-    mgr->remove(this);
-}
-
-
-class PingPongListener : public ListenRoutine, public ConnMgr<PingPongServer>
-{
-private:
-    TcpListener *l;
-public:
-    PingPongListener(TcpListener *_l);
-    virtual ~PingPongListener();
-public:
-    virtual int cycle();
-};
-
-PingPongListener::PingPongListener(TcpListener *_l)
-{
-    l = _l;
-}
-
-PingPongListener::~PingPongListener()
-{
-    if(l) {
-        delete l;
-    }
-}
-
-int PingPongListener::cycle()
-{
-    while(true) {
-        TcpConn* _conn = l->accept();
-        PingPongServer *pserver = new PingPongServer(this, _conn);
-        push(pserver);
-
-        pserver->start();
-    }
-    return 0;
-}
-
-int main()
-{
-    log_level = log_dbg;
-    coco_st_init();
-
-    TcpListener *l = listen_tcp(local_ip, port);
-    if (l == NULL) {
-        coco_error("create listen socket failed");
+    ssize_t wbytes = 0;
+    while (wbytes < nread) {
+      ret = conn_->Write(buf + wbytes, nread - wbytes, &nwrite);
+      if (ret != 0) {
+        coco_error("write error");
         return -1;
+      }
+      wbytes += nwrite;
     }
-    PingPongListener *pl = new PingPongListener(l);
-    pl->start();
+  }
+}
 
-    coco_uloop(1000*2000);
+class PingPongListener : public ListenRoutine {
+public:
+  PingPongListener(TcpListener *_l);
+  virtual ~PingPongListener();
 
-    delete pl;
-    return 0;
+  virtual int Cycle();
+
+private:
+  TcpListener *l_;
+  ConnManager *manager_;
+};
+
+PingPongListener::PingPongListener(TcpListener *l) { l_ = l; }
+
+PingPongListener::~PingPongListener() {
+  if (l_) {
+    delete l_;
+    l_ = nullptr;
+  }
+
+  if (manager_) {
+    delete manager_;
+    manager_ = nullptr;
+  }
+}
+
+int PingPongListener::Cycle() {
+  while (true) {
+    manager_->Destroy();
+
+    std::unique_ptr<TcpConn> p;
+    TcpConn *conn = l_->Accept();
+    p.reset(conn);
+    PingPongServer *pserver = new PingPongServer(manager_, std::move(p));
+    pserver->Start();
+  }
+  return 0;
+}
+
+int main() {
+  log_level = log_dbg;
+  CocoInit();
+
+  TcpListener *l = ListenTcp(local_ip, port);
+  if (l == NULL) {
+    coco_error("create listen socket failed");
+    return -1;
+  }
+  PingPongListener *pl = new PingPongListener(l);
+  pl->Start();
+
+  CocoLoopMs(1000);
+
+  delete pl;
+  return 0;
 }

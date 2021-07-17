@@ -1,3 +1,6 @@
 [submodule "thirdparty/http-parser"]
 	path = thirdparty/http-parser
 	url = git@github.com:nodejs/http-parser.git
+[submodule "thirdparty/st"]
+	path = thirdparty/st
+	url = git@github.com:hydah/state-threads.git

@@ -46,7 +46,7 @@ endif()
 string(REPLACE ";" " " CMAKE_CXX_FLAGS "${CXX_FLAGS}")
 
 set(CMAKE_CXX_FLAGS_DEBUG "-O0")
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O0 -DNDEBUG")
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 
@@ -74,27 +74,8 @@ include_directories(${PROJECT_SOURCE_DIR})
 set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
 include_directories(${THIRDPARTY}/http-parser)
 
-set(
-    COCO_BASE
-
-    coco/base/log.cpp
-    coco/base/utils.cpp
-    coco/base/st_coroutine.cpp
-    coco/base/st_socket.cpp
-    coco/base/error.cpp
-  )
-
-set(
-  COCO_NET
-
-  coco/net/net.cpp
-  coco/net/http_stack.cpp
-)
-# add_subdirectory(coco/base)
-# add_subdirectory(coco/net)
-
-add_library(coco ${COCO_NET} ${COCO_BASE} ${THIRDPARTY}/http-parser/http_parser.c)
-target_link_libraries(coco ${LIB_ST})
+include_directories(src)
+add_subdirectory(src)
 
 if(COCO_BUILD_EXAMPLES)
   add_subdirectory(examples)
