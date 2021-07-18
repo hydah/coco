@@ -6,6 +6,7 @@
 #include <netdb.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cstdlib>
 
 #include <map>
 
@@ -459,10 +460,22 @@ int coco_get_peer_port(int fd) {
   return port;
 }
 
+std::string GetRemoteAddr(int fd) {
+  sockaddr_storage addr;
+  socklen_t addrlen = sizeof(addr);
+  if (getpeername(fd, (sockaddr *)&addr, &addrlen) == -1) {
+    return "";
+  }
+
+  return GetRemoteAddr(*((sockaddr_in *)&addr));
+}
+
 std::string GetRemoteAddr(sockaddr_in &in) {
   static char _ip_convert_str[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(in.sin_addr), _ip_convert_str, INET_ADDRSTRLEN);
-  std::string dst_addr = _ip_convert_str;
+  auto len = strlen(_ip_convert_str);
+  _ip_convert_str[len] = ':';
+  sprintf(_ip_convert_str+len+1, "%d", ntohs(in.sin_port));
 
-  return dst_addr + ":" + std::to_string(ntohs(in.sin_port));
+  return _ip_convert_str;
 }

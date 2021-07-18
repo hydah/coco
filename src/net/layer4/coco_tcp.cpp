@@ -32,7 +32,7 @@ int TcpConn::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
 
 std::string TcpConn::RemoteAddr() {
   auto fd = skt_->get_osfd();
-  return coco_get_peer_ip(fd) + ":" + std::to_string(coco_get_peer_port(fd));
+  return GetRemoteAddr(fd);
 }
 
 /* TcpListener */
@@ -58,9 +58,7 @@ TcpConn *TcpListener::Accept() {
     return NULL;
   }
   auto fd = st_netfd_fileno(client_stfd);
-  auto client_addr =
-      coco_get_peer_ip(fd) + ":" + std::to_string(coco_get_peer_port(fd));
-  coco_trace("get a client. fd=%d, remote addr: %s", fd, client_addr.c_str());
+  coco_trace("get a client. fd=%d, remote addr: %s", fd, GetRemoteAddr(fd).c_str());
   return new TcpConn(client_stfd);
 }
 

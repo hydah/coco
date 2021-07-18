@@ -211,3 +211,4 @@ extern int write_large_iovs(IBufferWriter *skt, iovec *iovs, int size,
 std::string coco_get_peer_ip(int fd);
 int coco_get_peer_port(int fd);
 std::string GetRemoteAddr(sockaddr_in &in);
+std::string GetRemoteAddr(int fd);
