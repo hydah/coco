@@ -90,6 +90,7 @@ int main() {
       break;
     }
     coco_trace("read %s", buf);
+    CocoSleepMs(2000);
   }
 
   delete client;

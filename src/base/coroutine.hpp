@@ -87,6 +87,7 @@ public:
   virtual int Start();
   virtual int Cycle();
   virtual void Stop();
+  virtual std::string GetRemoteAddr() = 0;
 
 protected:
   virtual int DoCycle() = 0;

@@ -21,6 +21,7 @@ public:
   virtual ~PingPongServer() = default;
 
   virtual int DoCycle();
+  virtual std::string GetRemoteAddr() { return conn_->RemoteAddr(); };
 
 private:
   std::unique_ptr<TcpConn> conn_;
@@ -35,23 +36,21 @@ int PingPongServer::DoCycle() {
   char buf[1024];
   ssize_t nread = 0;
   ssize_t nwrite = 0;
-  int ret = 0;
+  int ret = COCO_SUCCESS;
   while (true) {
     ret = conn_->Read(buf, sizeof(buf), &nread);
     if (ret != 0) {
       coco_error("read error");
-      return -1;
+      break;
     }
-    ssize_t wbytes = 0;
-    while (wbytes < nread) {
-      ret = conn_->Write(buf + wbytes, nread - wbytes, &nwrite);
-      if (ret != 0) {
-        coco_error("write error");
-        return -1;
-      }
-      wbytes += nwrite;
+
+    ret = conn_->Write(buf, nread, &nwrite);
+    if (ret != 0) {
+      coco_error("write error");
+      break;
     }
   }
+  return ret;
 }
 
 class PingPongListener : public ListenRoutine {
@@ -66,7 +65,10 @@ private:
   ConnManager *manager_;
 };
 
-PingPongListener::PingPongListener(TcpListener *l) { l_ = l; }
+PingPongListener::PingPongListener(TcpListener *l) {
+  l_ = l;
+  manager_ = new ConnManager();
+}
 
 PingPongListener::~PingPongListener() {
   if (l_) {

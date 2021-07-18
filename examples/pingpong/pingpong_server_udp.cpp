@@ -26,7 +26,7 @@ private:
   UdpListener *l_;
 };
 
-PingPongListener::PingPongListener(UdpListener *l) { l_ = l_; }
+PingPongListener::PingPongListener(UdpListener *l) { l_ = l; }
 
 PingPongListener::~PingPongListener() {
   if (l_) {
@@ -37,14 +37,15 @@ PingPongListener::~PingPongListener() {
 
 int PingPongListener::Cycle() {
   char buf[1024];
-  ssize_t nread = 0;
+  ssize_t nread = 1024;
   ssize_t nwrite = 0;
   struct sockaddr_in addr;
   int len = 2048;
   int ret = 0;
   while (true) {
     ret = l_->RecvFrom(buf, len, &nread, (struct sockaddr *)&addr, &len);
-    coco_trace("read %s", buf);
+    buf[nread] = '\0';
+    coco_trace("read from: %s, size: %d, buf: %s", GetRemoteAddr(addr).c_str(), int(nread), buf);
     l_->SendTo(buf, (int)nread, &nwrite, (struct sockaddr *)&addr, len);
   }
 

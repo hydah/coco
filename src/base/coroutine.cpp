@@ -187,7 +187,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 
 #define SERVER_LISTEN_BACKLOG 512
 
-ListenRoutine::ListenRoutine() { coroutine = new CoCoroutine("tcp", this); }
+ListenRoutine::ListenRoutine() { coroutine = new CoCoroutine("listen", this); }
 
 ListenRoutine::~ListenRoutine() {
   coroutine->stop();
@@ -219,7 +219,7 @@ int ConnRoutine::Start() { return coroutine->start(); }
 void ConnRoutine::Stop() { coroutine->stop(); }
 
 int ConnRoutine::Cycle() {
-  coco_trace("[TRACE_ANCHOR] Connection");
+  coco_trace("[TRACE_ANCHOR] Connection, remote addr: %s", GetRemoteAddr().c_str());
 
   int ret = COCO_SUCCESS;
   id = CocoGetCoroutineID();
@@ -288,8 +288,13 @@ int CocoInit() {
     coco_error("st_init failed. ret=%d", ret);
     return ret;
   }
-  coco_trace("st_init success, use %s", st_get_eventsys_name());
 
+  if (_st_context) {
+    auto cid_ = _st_context->generate_id();
+    _st_context->set_id(cid_);
+    coco_trace("set main routine id: %d", cid_);
+  }
+  coco_trace("st_init success, use %s", st_get_eventsys_name());
   return ret;
 }
 

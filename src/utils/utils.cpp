@@ -417,3 +417,52 @@ int write_large_iovs(IBufferWriter *skt, iovec *iovs, int size,
 
   return ret;
 }
+
+std::string coco_get_peer_ip(int fd) {
+  // discovery client information
+  sockaddr_storage addr;
+  socklen_t addrlen = sizeof(addr);
+  if (getpeername(fd, (sockaddr *)&addr, &addrlen) == -1) {
+    return "";
+  }
+
+  char saddr[64];
+  char *h = (char *)saddr;
+  socklen_t nbh = (socklen_t)sizeof(saddr);
+  const int r0 = getnameinfo((const sockaddr *)&addr, addrlen, h, nbh, NULL, 0,
+                             NI_NUMERICHOST);
+  if (r0) {
+    return "";
+  }
+
+  return std::string(saddr);
+}
+
+int coco_get_peer_port(int fd) {
+  // discovery client information
+  sockaddr_storage addr;
+  socklen_t addrlen = sizeof(addr);
+  if (getpeername(fd, (sockaddr *)&addr, &addrlen) == -1) {
+    return 0;
+  }
+
+  int port = 0;
+  switch (addr.ss_family) {
+  case AF_INET:
+    port = ntohs(((sockaddr_in *)&addr)->sin_port);
+    break;
+  case AF_INET6:
+    port = ntohs(((sockaddr_in6 *)&addr)->sin6_port);
+    break;
+  }
+
+  return port;
+}
+
+std::string GetRemoteAddr(sockaddr_in &in) {
+  static char _ip_convert_str[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &(in.sin_addr), _ip_convert_str, INET_ADDRSTRLEN);
+  std::string dst_addr = _ip_convert_str;
+
+  return dst_addr + ":" + std::to_string(ntohs(in.sin_port));
+}

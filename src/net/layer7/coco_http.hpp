@@ -678,6 +678,7 @@ private:
 public:
   HttpServerConn(ConnManager *manager, TcpConn *conn, HttpServeMux *mux);
   virtual ~HttpServerConn();
+  virtual std::string GetRemoteAddr() { return _conn->RemoteAddr(); };
 
 public:
   virtual int DoCycle();
