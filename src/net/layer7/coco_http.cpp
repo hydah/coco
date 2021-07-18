@@ -1651,54 +1651,44 @@ int HttpServer::Cycle() {
   return 0;
 }
 
-HttpClient::HttpClient() {
-  connected = false;
-  stfd = nullptr;
-  io_ = nullptr;
-  parser = nullptr;
-  timeout_us = 0;
-  port = 0;
-  is_https = false;
-}
 
 HttpClient::~HttpClient() {
-  disconnect();
-  coco_freep(parser);
+  Disconnect();
+  coco_freep(parser_);
 }
 
-int HttpClient::initialize(std::string _h, int p, int64_t t_us,
-                           std::string url) {
+int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
   int ret = COCO_SUCCESS;
 
-  coco_freep(parser);
-  parser = new HttpParser();
+  coco_freep(parser_);
+  parser_ = new HttpParser();
 
-  if ((ret = parser->initialize(HTTP_RESPONSE)) != COCO_SUCCESS) {
+  if ((ret = parser_->initialize(HTTP_RESPONSE)) != COCO_SUCCESS) {
     coco_error("initialize parser failed. ret=%d", ret);
     return ret;
   }
 
-  host = _h;
-  port = p;
-  timeout_us = HTTP_CLIENT_TIMEOUT_US;
+  host_ = _h;
+  port_ = p;
+  timeout_us_ = HTTP_CLIENT_TIMEOUT_US;
 
-  set_https_flag(url.find("https") == 0);
+  is_https_ = is_https;
   // we just handle the default port when https
-  if ((is_https) && (80 == port)) {
-    port = 443;
+  if ((is_https_) && (80 == port_)) {
+    port_ = 443;
   }
   return ret;
 }
 
-int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
+int HttpClient::Post(std::string path, std::string req, HttpMessage **ppmsg,
                      std::string request_id) {
   *ppmsg = nullptr;
 
   int ret = COCO_SUCCESS;
 
-  if ((ret = connect()) != COCO_SUCCESS) {
+  if ((ret = Connect()) != COCO_SUCCESS) {
     coco_warn("http post. connect server failed. [host:%s, port:%d]ret=%d",
-              host.c_str(), port, ret);
+              host_.c_str(), port_, ret);
     return ret;
   }
 
@@ -1706,7 +1696,7 @@ int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
   // POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s
   std::stringstream ss;
   ss << "POST " << path << " "
-     << "HTTP/1.1" << HTTP_CRLF << "Host: " << host << HTTP_CRLF
+     << "HTTP/1.1" << HTTP_CRLF << "Host: " << host_ << HTTP_CRLF
      << "Request-Id: " << request_id << HTTP_CRLF << "Connection: Keep-Alive"
      << HTTP_CRLF << "Content-Length: " << std::dec << req.length() << HTTP_CRLF
      << "User-Agent: "
@@ -1714,17 +1704,17 @@ int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
      << HTTP_CRLF << req;
 
   std::string data = ss.str();
-  if ((ret = io_->Write((void *)data.c_str(), data.length(), nullptr)) !=
+  if ((ret = conn_->Write((void *)data.c_str(), data.length(), nullptr)) !=
       COCO_SUCCESS) {
     // disconnect when error.
-    disconnect();
+    Disconnect();
 
     coco_error("http post. write failed. ret=%d", ret);
     return ret;
   }
 
   HttpMessage *msg = nullptr;
-  if ((ret = parser->parse_message(io_, nullptr, &msg)) != COCO_SUCCESS) {
+  if ((ret = parser_->parse_message(conn_, nullptr, &msg)) != COCO_SUCCESS) {
     coco_error("http post. parse response failed. ret=%d", ret);
     return ret;
   }
@@ -1736,13 +1726,13 @@ int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
   return ret;
 }
 
-int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
+int HttpClient::Get(std::string path, std::string req, HttpMessage **ppmsg,
                     std::string request_id) {
   *ppmsg = nullptr;
 
   int ret = COCO_SUCCESS;
 
-  if ((ret = connect()) != COCO_SUCCESS) {
+  if ((ret = Connect()) != COCO_SUCCESS) {
     coco_warn("http connect server failed. ret=%d", ret);
     return ret;
   }
@@ -1751,7 +1741,7 @@ int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
   // GET %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s
   std::stringstream ss;
   ss << "GET " << path << " "
-     << "HTTP/1.1" << HTTP_CRLF << "Host: " << host << HTTP_CRLF
+     << "HTTP/1.1" << HTTP_CRLF << "Host: " << host_ << HTTP_CRLF
      << "Request-Id: " << request_id << HTTP_CRLF << "Connection: Keep-Alive"
      << HTTP_CRLF << "Content-Length: " << std::dec << req.length() << HTTP_CRLF
      << "User-Agent: "
@@ -1759,16 +1749,16 @@ int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
      << HTTP_CRLF << req;
 
   std::string data = ss.str();
-  if ((ret = io_->Write((void *)data.c_str(), data.length(), nullptr)) !=
+  if ((ret = conn_->Write((void *)data.c_str(), data.length(), nullptr)) !=
       COCO_SUCCESS) {
     // disconnect when error.
-    disconnect();
+    Disconnect();
     coco_error("write http get failed. ret=%d", ret);
     return ret;
   }
 
   HttpMessage *msg = nullptr;
-  if ((ret = parser->parse_message(io_, nullptr, &msg)) != COCO_SUCCESS) {
+  if ((ret = parser_->parse_message(conn_, nullptr, &msg)) != COCO_SUCCESS) {
     coco_error("parse http post response failed. ret=%d", ret);
     return ret;
   }
@@ -1780,37 +1770,45 @@ int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
   return ret;
 }
 
-void HttpClient::disconnect() {
-  connected = false;
-  coco_freep(conn);
+void HttpClient::Disconnect() {
+  connected_ = false;
+  coco_freep(conn_);
 }
 
-int HttpClient::connect() {
+int HttpClient::Connect() {
   int ret = COCO_SUCCESS;
 
-  if (connected) {
+  if (connected_) {
     return ret;
   }
 
-  disconnect();
+  Disconnect();
 
   // open socket.
-  conn = DialTcp(host, port, (int)timeout_us);
+  auto conn = DialTcp(host_, port_, (int)timeout_us_);
   if (conn == nullptr) {
     coco_warn("http client failed, server=%s, port=%d, timeout=%ld",
-              host.c_str(), port, timeout_us);
+              host_.c_str(), port_, timeout_us_);
     return -1;
   }
-  coco_info("connect to server success. server=%s, port=%d", host.c_str(),
-            port);
+  coco_info("connect to server success. server=%s, port=%d", host_.c_str(),
+            port_);
 
-  assert(!io_);
-  io_ =  conn->GetCocoSocket();
-  conn->SetRecvTimeout(timeout_us);
-  conn->SetSendTimeout(timeout_us);
-  connected = true;
+  if (is_https_) {
+     auto ssl = new SslClient(conn->GetStfd(), conn);
+     conn_ = ssl;
+     ret = ssl->Handshake();
+     if (ret != COCO_SUCCESS) {
+        coco_error("ssl handshake failed");
+        return ret;
+    }
+  } else {
+    conn_ = conn;
+  }
+
+  conn_->SetRecvTimeout(timeout_us_);
+  conn_->SetSendTimeout(timeout_us_);
+  connected_ = true;
 
   return ret;
 }
-
-void HttpClient::set_https_flag(bool b_flag) { is_https = b_flag; }

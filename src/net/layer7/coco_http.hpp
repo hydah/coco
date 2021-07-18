@@ -712,33 +712,15 @@ private:
  * http client to GET/POST/PUT/DELETE uri
  */
 class HttpClient {
-private:
-  bool connected;
-  bool is_https;
-  st_netfd_t stfd;
-  IoReaderWriter *io_;
-  TcpConn *conn;
-  HttpParser *parser;
-
-private:
-  int64_t timeout_us;
-  // host name or ip.
-  std::string host;
-  int port;
-
 public:
-  HttpClient();
+  HttpClient() = default;
   virtual ~HttpClient();
 
-public:
   /**
    * initialize the client, connect to host and port.
    */
-  virtual int initialize(std::string h, int p,
-                         int64_t t_us = HTTP_CLIENT_TIMEOUT_US,
-                         std::string url = "");
-
-public:
+  virtual int Initialize(bool is_https, std::string h, int p,
+                         int64_t t_us = HTTP_CLIENT_TIMEOUT_US);
   /**
    * to post data to the uri.
    * @param the path to request on.
@@ -746,7 +728,7 @@ public:
    * @param ppmsg output the http message to read the response.
    * @param request_id request id, used for trace log.
    */
-  virtual int post(std::string path, std::string req, HttpMessage **ppmsg,
+  virtual int Post(std::string path, std::string req, HttpMessage **ppmsg,
                    std::string request_id = "");
   /**
    * to get data from the uri.
@@ -755,16 +737,19 @@ public:
    * @param ppmsg output the http message to read the response.
    * @param request_id request id, used for trace log.
    */
-  virtual int get(std::string path, std::string req, HttpMessage **ppmsg,
+  virtual int Get(std::string path, std::string req, HttpMessage **ppmsg,
                   std::string request_id = "");
 
-  /**
-   * to set https mode flag
-   * @param flag to be set to bHttps
-   */
-  virtual void set_https_flag(bool b_flag);
-
 private:
-  virtual void disconnect();
-  virtual int connect();
+  virtual void Disconnect();
+  virtual int Connect();
+
+  bool connected_ = false;
+  bool is_https_ = false;
+  StreamConn *conn_ = nullptr;
+  HttpParser *parser_ = nullptr;
+  int64_t timeout_us_;
+  // host name or ip.
+  std::string host_ = "";
+  int port_ = -1;
 };
