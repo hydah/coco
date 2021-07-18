@@ -29,9 +29,13 @@ public:
   virtual void SetRecvTimeout(int64_t timeout_us) {
     conn_->SetRecvTimeout(timeout_us);
   };
-  virtual void set_send_timeout(int64_t timeout_us) {
+  virtual void SetSendTimeout(int64_t timeout_us) {
     conn_->SetSendTimeout(timeout_us);
   };
+  virtual void SetTimeout(uint64_t timeout_us) {
+    conn_->SetRecvTimeout(timeout_us);
+    conn_->SetSendTimeout(timeout_us);
+  }
 
 private:
   TcpConn *conn_;

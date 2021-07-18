@@ -66,15 +66,18 @@ else()
             make linux-debug EXTRA_CFLAGS='-DMD_HAVE_EPOLL'"
         )
 endif()
+include_directories(${PROJECT_SOURCE_DIR})
 set(LIB_ST  ${ST_OBJ_DIR}/libst.a)
 install(FILES ${ST_OBJ_DIR}/st.h DESTINATION include)
 install(FILES ${ST_OBJ_DIR}/libst.a DESTINATION lib)
 
-include_directories(${PROJECT_SOURCE_DIR})
+#http parser
 set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
 include_directories(${THIRDPARTY}/http-parser)
 
-include_directories(src)
+
+include_directories(${PROJECT_SOURCE_DIR}/src)
+
 add_subdirectory(src)
 
 if(COCO_BUILD_EXAMPLES)
