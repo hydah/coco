@@ -165,13 +165,6 @@ std::string get_public_internet_address() {
   return "";
 }
 
-IBufferReader::IBufferReader() {}
-
-IBufferReader::~IBufferReader() {}
-
-IBufferWriter::IBufferWriter() {}
-
-IBufferWriter::~IBufferWriter() {}
 
 // the default recv buffer size, 128KB.
 #define DEFAULT_RECV_BUFFER_SIZE (128 * 1024)
@@ -291,7 +284,7 @@ void FastBuffer::skip(int _size) {
   p += _size;
 }
 
-int FastBuffer::grow(IBufferReader *reader, int required_size) {
+int FastBuffer::grow(IoReader *reader, int required_size) {
   int ret = COCO_SUCCESS;
 
   // already got required size of bytes.
@@ -342,7 +335,7 @@ int FastBuffer::grow(IBufferReader *reader, int required_size) {
   // buffer is ok, read required size of bytes.
   while (end - p < required_size) {
     ssize_t nread;
-    if ((ret = reader->read(end, nb_free_space, &nread)) != COCO_SUCCESS) {
+    if ((ret = reader->Read(end, nb_free_space, &nread)) != COCO_SUCCESS) {
       return ret;
     }
     // we just move the ptr to next.
@@ -386,14 +379,14 @@ int FastBuffer::realloc_buffer(int _size) {
   return COCO_SUCCESS;
 }
 
-int write_large_iovs(IBufferWriter *skt, iovec *iovs, int size,
+int write_large_iovs(IoWriter *skt, iovec *iovs, int size,
                      ssize_t *pnwrite) {
   int ret = COCO_SUCCESS;
   static int limits = 1024;
 
   // send in a time.
   if (size < limits) {
-    if ((ret = skt->writev(iovs, size, pnwrite)) != COCO_SUCCESS) {
+    if ((ret = skt->Writev(iovs, size, pnwrite)) != COCO_SUCCESS) {
       if (!coco_is_client_gracefully_close(ret)) {
         coco_error("send with writev failed. ret=%d", ret);
       }
@@ -406,7 +399,7 @@ int write_large_iovs(IBufferWriter *skt, iovec *iovs, int size,
   int cur_iov = 0;
   while (cur_iov < size) {
     int cur_count = coco_min(limits, size - cur_iov);
-    if ((ret = skt->writev(iovs + cur_iov, cur_count, pnwrite)) !=
+    if ((ret = skt->Writev(iovs + cur_iov, cur_count, pnwrite)) !=
         COCO_SUCCESS) {
       if (!coco_is_client_gracefully_close(ret)) {
         coco_error("send with writev failed. ret=%d", ret);

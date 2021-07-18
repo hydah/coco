@@ -33,7 +33,7 @@ int64_t CocoSocket::get_send_bytes() { return send_bytes; }
 
 int CocoSocket::get_osfd() { return st_netfd_fileno(stfd); }
 
-int CocoSocket::read(void *buf, size_t size, ssize_t *nread) {
+int CocoSocket::Read(void *buf, size_t size, ssize_t *nread) {
   int ret = COCO_SUCCESS;
 
   ssize_t nb_read = st_read(stfd, buf, size, recv_timeout);
@@ -63,7 +63,7 @@ int CocoSocket::read(void *buf, size_t size, ssize_t *nread) {
   return ret;
 }
 
-int CocoSocket::read_fully(void *buf, size_t size, ssize_t *nread) {
+int CocoSocket::ReadFully(void *buf, size_t size, ssize_t *nread) {
   int ret = COCO_SUCCESS;
 
   ssize_t nb_read = st_read_fully(stfd, buf, size, recv_timeout);
@@ -93,7 +93,7 @@ int CocoSocket::read_fully(void *buf, size_t size, ssize_t *nread) {
   return ret;
 }
 
-int CocoSocket::write(void *buf, size_t size, ssize_t *nwrite) {
+int CocoSocket::Write(void *buf, size_t size, ssize_t *nwrite) {
   int ret = COCO_SUCCESS;
 
   ssize_t nb_write = st_write(stfd, buf, size, send_timeout);
@@ -118,7 +118,7 @@ int CocoSocket::write(void *buf, size_t size, ssize_t *nwrite) {
   return ret;
 }
 
-int CocoSocket::writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
+int CocoSocket::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
   int ret = COCO_SUCCESS;
 
   ssize_t nb_write = st_writev(stfd, iov, iov_size, send_timeout);

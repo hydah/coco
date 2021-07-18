@@ -1,6 +1,7 @@
 #pragma once
 
 #include "net/layer4/coco_tcp.hpp"
+#include "net/layer4/coco_ssl.hpp"
 #include "thirdparty/http-parser/http_parser.h"
 #include "utils/utils.hpp"
 #include <sstream>
@@ -198,7 +199,7 @@ public:
 #define HTTP_HEADER_CACHE_SIZE 64
 class HttpResponseWriter {
 private:
-  CocoSocket *skt;
+  IoReaderWriter *io_;
   HttpHeader *hdr;
 
 private:
@@ -226,17 +227,17 @@ private:
   bool header_sent;
 
 public:
-  HttpResponseWriter(CocoSocket *io);
+  HttpResponseWriter(IoReaderWriter *io);
   virtual ~HttpResponseWriter();
 
 public:
   virtual int final_request();
   virtual HttpHeader *header();
-  virtual int write(char *data, int size);
-  virtual int writev(iovec *iov, int iovcnt, ssize_t *pnwrite);
-  virtual void write_header(int code);
-  virtual int send_header(char *data, int size);
-  virtual CocoSocket *st_socket();
+  virtual int Write(char *data, int size);
+  virtual int Writev(iovec *iov, int iovcnt, ssize_t *pnwrite);
+  virtual void WriteHeader(int code);
+  virtual int SendHeader(char *data, int size);
+  // virtual IoReaderWriter *st_socket();
 };
 
 /**
@@ -244,7 +245,7 @@ public:
  */
 class HttpResponseReader {
 private:
-  CocoSocket *skt;
+  IoReaderWriter *io_;
   HttpMessage *owner;
   FastBuffer *buffer;
   bool is_eof;
@@ -256,7 +257,7 @@ private:
   int64_t nb_total_read;
 
 public:
-  HttpResponseReader(HttpMessage *msg, CocoSocket *io);
+  HttpResponseReader(HttpMessage *msg, IoReaderWriter *io);
   virtual ~HttpResponseReader();
 
 public:
@@ -267,12 +268,12 @@ public:
 
 public:
   virtual bool eof();
-  virtual int read(char *data, int nb_data, int *nb_read);
-  virtual int read_full(char *data, int nb_data, int *nb_read);
+  virtual int Read(char *data, int nb_data, int *nb_read);
+  virtual int ReadFull(char *data, int nb_data, int *nb_read);
 
 private:
-  virtual int read_chunked(char *data, int nb_data, int *nb_read);
-  virtual int read_specified(char *data, int nb_data, int *nb_read);
+  virtual int ReadChunked(char *data, int nb_data, int *nb_read);
+  virtual int ReadSpecified(char *data, int nb_data, int *nb_read);
 };
 
 // get the status text of code.
@@ -385,14 +386,14 @@ public:
    * or error and *ppmsg must be NULL.
    * @remark, if success, *ppmsg always NOT-NULL, *ppmsg always is_complete().
    */
-  virtual int parse_message(CocoSocket *skt, HttpServerConn *conn,
+  virtual int parse_message(IoReaderWriter *io, HttpServerConn *conn,
                             HttpMessage **ppmsg);
 
 private:
   /**
    * parse the HTTP message to member field: msg.
    */
-  virtual int parse_message_imp(CocoSocket *skt);
+  virtual int parse_message_imp(IoReaderWriter *io);
 
 private:
   static int on_message_begin(http_parser *parser);
@@ -446,7 +447,7 @@ private:
   std::string jsonp_method;
 
 public:
-  HttpMessage(CocoSocket *io, HttpServerConn *c);
+  HttpMessage(IoReaderWriter *io, HttpServerConn *c);
   virtual ~HttpMessage();
 
 public:
@@ -670,38 +671,38 @@ private:
 };
 
 class HttpServerConn : public ConnRoutine {
-private:
-  TcpConn *_conn;
-  HttpServeMux *_mux;
-  HttpParser *_parser;
-
 public:
   HttpServerConn(ConnManager *manager, TcpConn *conn, HttpServeMux *mux);
+  HttpServerConn(ConnManager *manager, SslServer *conn, HttpServeMux *mux);
   virtual ~HttpServerConn();
-  virtual std::string GetRemoteAddr() { return _conn->RemoteAddr(); };
 
 public:
   virtual int DoCycle();
   int ProcessRequest(HttpResponseWriter *w, HttpMessage *r);
+  virtual std::string GetRemoteAddr() { return conn_->RemoteAddr(); };
+
+private:
+  StreamConn *conn_;
+  HttpServeMux *_mux;
+  HttpParser *_parser;
+  bool https_;
 };
 
 class HttpServer : public ListenRoutine {
+public:
+  HttpServer(bool https);
+  virtual ~HttpServer();
+
+  virtual int ListenAndServe(std::string local_ip, int local_port,
+                             HttpServeMux *mux);
+  virtual int Serve(TcpListener *l, HttpServeMux *mux);
+  virtual int Cycle();
+
 private:
   TcpListener *_l;
   HttpServeMux *_mux;
   ConnManager *manager;
-
-public:
-  HttpServer();
-  virtual ~HttpServer();
-
-public:
-  virtual int ListenAndServe(std::string local_ip, int local_port,
-                             HttpServeMux *mux);
-  virtual int Serve(TcpListener *l, HttpServeMux *mux);
-
-public:
-  virtual int Cycle();
+  bool https_ = false;
 };
 
 // the default timeout for http client. 1s
@@ -715,7 +716,7 @@ private:
   bool connected;
   bool is_https;
   st_netfd_t stfd;
-  CocoSocket *skt;
+  IoReaderWriter *io_;
   TcpConn *conn;
   HttpParser *parser;
 

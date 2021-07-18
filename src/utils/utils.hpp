@@ -87,34 +87,27 @@ public:
   }
 };
 
-class IBufferReader {
+class IoReader {
 public:
-  IBufferReader();
-  virtual ~IBufferReader();
+  IoReader() = default;
+  virtual ~IoReader() = default;
 
-public:
-  virtual int read(void *buf, size_t size, ssize_t *nread) = 0;
+  virtual int Read(void *buf, size_t size, ssize_t *nread) = 0;
 };
 
-/**
- * the writer for the buffer to write to whatever channel.
- */
-class IBufferWriter {
+class IoWriter {
 public:
-  IBufferWriter();
-  virtual ~IBufferWriter();
+  IoWriter() = default;
+  virtual ~IoWriter() = default;
 
+  virtual int Write(void *buf, size_t size, ssize_t *nwrite) = 0;
+  virtual int Writev(const iovec *iov, int iov_size, ssize_t *nwrite) = 0;
+};
+
+class IoReaderWriter : public IoReader, public IoWriter {
 public:
-  /**
-   * write bytes over writer.
-   * @nwrite the actual written bytes. NULL to ignore.
-   */
-  virtual int write(void *buf, size_t size, ssize_t *nwrite) = 0;
-  /**
-   * write iov over writer.
-   * @nwrite the actual written bytes. NULL to ignore.
-   */
-  virtual int writev(const iovec *iov, int iov_size, ssize_t *nwrite) = 0;
+  IoReaderWriter() = default;
+  virtual ~IoReaderWriter() = default;
 };
 
 /**
@@ -202,11 +195,11 @@ public:
    * @remark, we actually maybe read more than required_size, maybe 4k for
    * example.
    */
-  virtual int grow(IBufferReader *reader, int required_size);
+  virtual int grow(IoReader *reader, int required_size);
   virtual int realloc_buffer(int size);
 };
 
-extern int write_large_iovs(IBufferWriter *skt, iovec *iovs, int size,
+extern int write_large_iovs(IoWriter *skt, iovec *iovs, int size,
                             ssize_t *pnwrite);
 std::string coco_get_peer_ip(int fd);
 int coco_get_peer_port(int fd);

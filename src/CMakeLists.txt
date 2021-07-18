@@ -18,6 +18,6 @@ set(SRCS
 # 指定生成目标
 add_library(coco ${SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
 # 添加链接库
-target_link_libraries(coco ${LIB_ST})
+target_link_libraries(coco ${LIB_ST} ssl crypto)
 
 install(TARGETS coco LIBRARY DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin)

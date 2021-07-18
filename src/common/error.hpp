@@ -100,5 +100,10 @@
 #define ERROR_HTTP_RESPONSE_EOF 4025
 #define ERROR_HTTP_INVALID_CHUNK_HEADER 4026
 #define ERROR_HTTP_REQUEST_EOF 4029
+#define ERROR_HTTPS_NOT_SUPPORTED           4041
+#define ERROR_HTTPS_HANDSHAKE               4042
+#define ERROR_HTTPS_READ                    4043
+#define ERROR_HTTPS_WRITE                   4044
+#define ERROR_HTTPS_KEY_CRT                 4045
 
 extern bool coco_is_client_gracefully_close(int error_code);

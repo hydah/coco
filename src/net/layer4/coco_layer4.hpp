@@ -2,6 +2,8 @@
 #include <unistd.h>
 
 #include "net/coco_socket.hpp"
+#include "utils/utils.hpp"
+#include "log/log.hpp"
 #include <assert.h>
 
 class Layer4Conn {
@@ -11,17 +13,30 @@ public:
     skt_ = new CocoSocket(stfd);
   }
   virtual ~Layer4Conn() {
+    coco_dbg("destruct layer4conn");
     if (skt_) {
+      coco_dbg("free skt_");
       free(skt_);
       skt_ = nullptr;
     }
 
     if (stfd_) {
+      coco_dbg("close stfd");
       // we must ensure the close is ok.
       assert(st_netfd_close(stfd_) != -1);
       stfd_ = NULL;
     }
-  };
+  }
+  
+  void Release() {
+    stfd_ = nullptr;
+    if (skt_) {
+        coco_dbg("free skt_");
+        free(skt_);
+        skt_ = nullptr;
+    }
+  }
+
 
   virtual st_netfd_t GetStfd() = 0;
 
@@ -42,7 +57,7 @@ protected:
   CocoSocket *skt_ = nullptr;
 };
 
-class StreamConn : public Layer4Conn {
+class StreamConn : public Layer4Conn, public IoReaderWriter {
 public:
   StreamConn(st_netfd_t stfd) : Layer4Conn(stfd){};
   virtual ~StreamConn() = default;
@@ -50,10 +65,21 @@ public:
   // Layer4Conn method
   st_netfd_t GetStfd() { return stfd_; };
 
-  virtual int Read(void *buf, size_t size, ssize_t *nread) = 0;
-  virtual int ReadFully(void *buf, size_t size, ssize_t *nread) = 0;
-  virtual int Write(void *buf, size_t size, ssize_t *nwrite) = 0;
-  virtual int Writev(const iovec *iov, int iov_size, ssize_t *nwrite) = 0;
+  // IoReaderWriter method
+  virtual int Read(void *buf, size_t size, ssize_t *nread) {
+    return skt_->Read(buf, size, nread);
+  }
+  virtual int Write(void *buf, size_t size, ssize_t *nwrite){
+    return skt_->Write(buf, size, nwrite);
+  }
+  virtual int Writev(const iovec *iov, int iov_size, ssize_t *nwrite){
+    return skt_->Writev(iov, iov_size, nwrite);
+  }
+
+  virtual int ReadFully(void *buf, size_t size, ssize_t *nread){
+    return skt_->ReadFully(buf, size, nread);
+  }
+  virtual std::string RemoteAddr() = 0;
 };
 
 class DatagramConn : public Layer4Conn {
@@ -65,7 +91,11 @@ public:
   virtual st_netfd_t GetStfd() { return stfd_; };
 
   virtual int RecvFrom(void *buf, int size, ssize_t *nread,
-                       struct sockaddr *from, int *fromlen) = 0;
+                       struct sockaddr *from, int *fromlen) {
+                         return skt_->recvfrom(buf, size, nread, from, fromlen);
+                       }
   virtual int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to,
-                     int tolen) = 0;
+                     int tolen){
+                       return skt_->sendto(buf, size, nwrite, to, tolen);
+                     }
 };

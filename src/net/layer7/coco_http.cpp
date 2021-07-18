@@ -115,8 +115,8 @@ int go_http_error(HttpResponseWriter *w, int code, std::string error) {
 
   w->header()->set_content_type("text/plain; charset=utf-8");
   w->header()->set_content_length(error.length());
-  w->write_header(code);
-  w->write((char *)error.data(), (int)error.length());
+  w->WriteHeader(code);
+  w->Write((char *)error.data(), (int)error.length());
 
   return ret;
 }
@@ -170,8 +170,8 @@ void HttpHeader::write(std::stringstream &ss) {
   }
 }
 
-HttpResponseWriter::HttpResponseWriter(CocoSocket *io) {
-  skt = io;
+HttpResponseWriter::HttpResponseWriter(IoReaderWriter *io) {
+  io_ = io;
   hdr = new HttpHeader();
   header_wrote = false;
   status = CONSTS_HTTP_OK;
@@ -188,12 +188,12 @@ HttpResponseWriter::~HttpResponseWriter() {
   coco_freepa(iovss_cache);
 }
 
-CocoSocket *HttpResponseWriter::st_socket() { return skt; }
+// IoReaderWriter *HttpResponseWriter::st_socket() { return io_; }
 
 int HttpResponseWriter::final_request() {
   // write the header data in memory.
   if (!header_wrote) {
-    write_header(CONSTS_HTTP_OK);
+    WriteHeader(CONSTS_HTTP_OK);
   }
 
   // complete the chunked encoding.
@@ -201,25 +201,25 @@ int HttpResponseWriter::final_request() {
     std::stringstream ss;
     ss << 0 << HTTP_CRLF << HTTP_CRLF;
     std::string ch = ss.str();
-    return skt->write((void *)ch.data(), (int)ch.length(), nullptr);
+    return io_->Write((void *)ch.data(), (int)ch.length(), nullptr);
   }
 
   // flush when send with content length
-  return write(nullptr, 0);
+  return Write(nullptr, 0);
 }
 
 HttpHeader *HttpResponseWriter::header() { return hdr; }
 
-int HttpResponseWriter::write(char *data, int size) {
+int HttpResponseWriter::Write(char *data, int size) {
   int ret = COCO_SUCCESS;
 
   // write the header data in memory.
   if (!header_wrote) {
-    write_header(CONSTS_HTTP_OK);
+    WriteHeader(CONSTS_HTTP_OK);
   }
 
   // whatever header is wrote, we should try to send header.
-  if ((ret = send_header(data, size)) != COCO_SUCCESS) {
+  if ((ret = SendHeader(data, size)) != COCO_SUCCESS) {
     coco_error("http: send header failed. ret=%d", ret);
     return ret;
   }
@@ -239,7 +239,7 @@ int HttpResponseWriter::write(char *data, int size) {
 
   // directly send with content length
   if (content_length != -1) {
-    return skt->write((void *)data, size, nullptr);
+    return io_->Write((void *)data, size, nullptr);
   }
 
   // send in chunked encoding.
@@ -256,14 +256,14 @@ int HttpResponseWriter::write(char *data, int size) {
   iovs[3].iov_len = 2;
 
   ssize_t nwrite;
-  if ((ret = skt->writev(iovs, 4, &nwrite)) != COCO_SUCCESS) {
+  if ((ret = io_->Writev(iovs, 4, &nwrite)) != COCO_SUCCESS) {
     return ret;
   }
 
   return ret;
 }
 
-int HttpResponseWriter::writev(iovec *iov, int iovcnt, ssize_t *pnwrite) {
+int HttpResponseWriter::Writev(iovec *iov, int iovcnt, ssize_t *pnwrite) {
   int ret = COCO_SUCCESS;
 
   // when header not ready, or not chunked, send one by one.
@@ -272,7 +272,7 @@ int HttpResponseWriter::writev(iovec *iov, int iovcnt, ssize_t *pnwrite) {
     for (int i = 0; i < iovcnt; i++) {
       iovec *piovc = iov + i;
       nwrite += piovc->iov_len;
-      if ((ret = write((char *)piovc->iov_base, (int)piovc->iov_len)) !=
+      if ((ret = Write((char *)piovc->iov_base, (int)piovc->iov_len)) !=
           COCO_SUCCESS) {
         return ret;
       }
@@ -336,7 +336,7 @@ int HttpResponseWriter::writev(iovec *iov, int iovcnt, ssize_t *pnwrite) {
 
   // sendout all ioves.
   ssize_t nwrite;
-  if ((ret = write_large_iovs(skt, iovss, nb_iovss, &nwrite)) != COCO_SUCCESS) {
+  if ((ret = write_large_iovs(io_, iovss, nb_iovss, &nwrite)) != COCO_SUCCESS) {
     return ret;
   }
 
@@ -347,7 +347,7 @@ int HttpResponseWriter::writev(iovec *iov, int iovcnt, ssize_t *pnwrite) {
   return ret;
 }
 
-void HttpResponseWriter::write_header(int code) {
+void HttpResponseWriter::WriteHeader(int code) {
   if (header_wrote) {
     coco_warn("http: multiple write_header calls, code=%d", code);
     return;
@@ -360,7 +360,7 @@ void HttpResponseWriter::write_header(int code) {
   content_length = hdr->content_length();
 }
 
-int HttpResponseWriter::send_header(char *data, int size) {
+int HttpResponseWriter::SendHeader(char *data, int size) {
   int ret = COCO_SUCCESS;
 
   if (header_sent) {
@@ -397,11 +397,11 @@ int HttpResponseWriter::send_header(char *data, int size) {
 
   std::string buf = ss.str();
   hdr->set_header_length(buf.length());
-  return skt->write((void *)buf.c_str(), buf.length(), nullptr);
+  return io_->Write((void *)buf.c_str(), buf.length(), nullptr);
 }
 
-HttpResponseReader::HttpResponseReader(HttpMessage *msg, CocoSocket *io) {
-  skt = io;
+HttpResponseReader::HttpResponseReader(HttpMessage *msg, IoReaderWriter *io) {
+  io_ = io;
   owner = msg;
   is_eof = false;
   nb_total_read = 0;
@@ -425,12 +425,12 @@ int HttpResponseReader::initialize(FastBuffer *body) {
 
 bool HttpResponseReader::eof() { return is_eof; }
 
-int HttpResponseReader::read_full(char *data, int nb_data, int *nb_read) {
+int HttpResponseReader::ReadFull(char *data, int nb_data, int *nb_read) {
   int ret = COCO_SUCCESS;
   int nsize = 0;
   int nleft = nb_data;
   while (true) {
-    ret = read(data, nleft, &nsize);
+    ret = Read(data, nleft, &nsize);
     if (ret != COCO_SUCCESS) {
       return ret;
     }
@@ -452,7 +452,7 @@ int HttpResponseReader::read_full(char *data, int nb_data, int *nb_read) {
   return ret;
 }
 
-int HttpResponseReader::read(char *data, int nb_data, int *nb_read) {
+int HttpResponseReader::Read(char *data, int nb_data, int *nb_read) {
 
   int ret = COCO_SUCCESS;
 
@@ -465,7 +465,7 @@ int HttpResponseReader::read(char *data, int nb_data, int *nb_read) {
 
   // chunked encoding.
   if (owner->is_chunked()) {
-    return read_chunked(data, nb_data, nb_read);
+    return ReadChunked(data, nb_data, nb_read);
   }
 
   // read by specified content-length
@@ -478,13 +478,13 @@ int HttpResponseReader::read(char *data, int nb_data, int *nb_read) {
 
     // change the max to read.
     nb_data = coco_min(nb_data, max);
-    return read_specified(data, nb_data, nb_read);
+    return ReadSpecified(data, nb_data, nb_read);
   }
 
   // infinite chunked mode, directly read.
   if (owner->is_infinite_chunked()) {
     assert(!owner->is_chunked() && owner->content_length() == -1);
-    return read_specified(data, nb_data, nb_read);
+    return ReadSpecified(data, nb_data, nb_read);
   }
 
   // infinite chunked mode, but user not set it,
@@ -494,7 +494,7 @@ int HttpResponseReader::read(char *data, int nb_data, int *nb_read) {
   return ret;
 }
 
-int HttpResponseReader::read_chunked(char *data, int nb_data, int *nb_read) {
+int HttpResponseReader::ReadChunked(char *data, int nb_data, int *nb_read) {
   int ret = COCO_SUCCESS;
 
   // when no bytes left in chunk,
@@ -526,7 +526,7 @@ int HttpResponseReader::read_chunked(char *data, int nb_data, int *nb_read) {
       }
 
       // when empty, only grow 1bytes, but the buffer will cache more.
-      if ((ret = buffer->grow(skt, buffer->size() + 1)) != COCO_SUCCESS) {
+      if ((ret = buffer->grow(io_, buffer->size() + 1)) != COCO_SUCCESS) {
         if (!coco_is_client_gracefully_close(ret)) {
           coco_error("read body from server failed. ret=%d", ret);
         }
@@ -560,7 +560,7 @@ int HttpResponseReader::read_chunked(char *data, int nb_data, int *nb_read) {
     assert(nb_left_chunk);
 
     int nb_bytes = coco_min(nb_left_chunk, nb_data);
-    ret = read_specified(data, nb_bytes, &nb_bytes);
+    ret = ReadSpecified(data, nb_bytes, &nb_bytes);
 
     // the nb_bytes used for output already read size of bytes.
     if (nb_read) {
@@ -577,7 +577,7 @@ int HttpResponseReader::read_chunked(char *data, int nb_data, int *nb_read) {
   }
 
   // for both the last or not, the CRLF of chunk payload end.
-  if ((ret = buffer->grow(skt, 2)) != COCO_SUCCESS) {
+  if ((ret = buffer->grow(io_, 2)) != COCO_SUCCESS) {
     if (!coco_is_client_gracefully_close(ret)) {
       coco_error("read EOF of chunk from server failed. ret=%d", ret);
     }
@@ -588,12 +588,12 @@ int HttpResponseReader::read_chunked(char *data, int nb_data, int *nb_read) {
   return ret;
 }
 
-int HttpResponseReader::read_specified(char *data, int nb_data, int *nb_read) {
+int HttpResponseReader::ReadSpecified(char *data, int nb_data, int *nb_read) {
   int ret = COCO_SUCCESS;
 
   if (buffer->size() <= 0) {
     // when empty, only grow 1bytes, but the buffer will cache more.
-    if ((ret = buffer->grow(skt, 1)) != COCO_SUCCESS) {
+    if ((ret = buffer->grow(io_, 1)) != COCO_SUCCESS) {
       if (!coco_is_client_gracefully_close(ret)) {
         coco_error("read body from server failed. ret=%d", ret);
       }
@@ -716,7 +716,7 @@ int HttpParser::initialize(enum http_parser_type type) {
   return ret;
 }
 
-int HttpParser::parse_message(CocoSocket *skt, HttpServerConn *conn,
+int HttpParser::parse_message(IoReaderWriter *io_, HttpServerConn *conn,
                               HttpMessage **ppmsg) {
   *ppmsg = nullptr;
 
@@ -733,7 +733,7 @@ int HttpParser::parse_message(CocoSocket *skt, HttpServerConn *conn,
   header_parsed = 0;
 
   // do parse
-  if ((ret = parse_message_imp(skt)) != COCO_SUCCESS) {
+  if ((ret = parse_message_imp(io_)) != COCO_SUCCESS) {
     if (!coco_is_client_gracefully_close(ret)) {
       coco_error("parse http msg failed. ret=%d", ret);
     }
@@ -741,7 +741,7 @@ int HttpParser::parse_message(CocoSocket *skt, HttpServerConn *conn,
   }
 
   // create msg
-  HttpMessage *msg = new HttpMessage(skt, conn);
+  HttpMessage *msg = new HttpMessage(io_, conn);
 
   // initalize http msg, parse url.
   if ((ret = msg->update(url, &header, buffer, headers)) != COCO_SUCCESS) {
@@ -756,7 +756,7 @@ int HttpParser::parse_message(CocoSocket *skt, HttpServerConn *conn,
   return ret;
 }
 
-int HttpParser::parse_message_imp(CocoSocket *skt) {
+int HttpParser::parse_message_imp(IoReaderWriter *io_) {
   int ret = COCO_SUCCESS;
 
   // while (true) {
@@ -794,7 +794,7 @@ int HttpParser::parse_message_imp(CocoSocket *skt) {
   //     // when nothing parsed, read more to parse.
   //     if (nparsed == 0) {
   //         // when requires more, only grow 1bytes, but the buffer will cache
-  //         more. if ((ret = buffer->grow(skt, buffer->size() + 1)) !=
+  //         more. if ((ret = buffer->grow(io_, buffer->size() + 1)) !=
   //         COCO_SUCCESS) {
   //             if (!coco_is_client_gracefully_close(ret)) {
   //                 coco_error("read body from server failed. ret=%d", ret);
@@ -838,7 +838,7 @@ int HttpParser::parse_message_imp(CocoSocket *skt) {
     }
 
     // when requires more, only grow 1bytes, but the buffer will cache more.
-    if ((ret = buffer->grow(skt, buffer->size() + 1)) != COCO_SUCCESS) {
+    if ((ret = buffer->grow(io_, buffer->size() + 1)) != COCO_SUCCESS) {
       if (!coco_is_client_gracefully_close(ret)) {
         coco_error("read body from server failed. ret=%d", ret);
       }
@@ -953,7 +953,7 @@ int HttpParser::on_body(http_parser *parser, const char *at, size_t length) {
   return 0;
 }
 
-HttpMessage::HttpMessage(CocoSocket *io, HttpServerConn *c) {
+HttpMessage::HttpMessage(IoReaderWriter *io, HttpServerConn *c) {
   conn = c;
   chunked = false;
   infinite_chunked = false;
@@ -1152,7 +1152,7 @@ int HttpMessage::body_read_all(std::string &body) {
   // whatever, read util EOF.
   while (!_body->eof()) {
     int nb_read = 0;
-    if ((ret = _body->read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) !=
+    if ((ret = _body->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) !=
         COCO_SUCCESS) {
       return ret;
     }
@@ -1240,9 +1240,9 @@ int HttpRedirectHandler::serve_http(HttpResponseWriter *w, HttpMessage *r) {
   w->header()->set_content_type("text/plain; charset=utf-8");
   w->header()->set_content_length(msg.length());
   w->header()->set("Location", location);
-  w->write_header(code);
+  w->WriteHeader(code);
 
-  w->write((char *)msg.data(), (int)msg.length());
+  w->Write((char *)msg.data(), (int)msg.length());
   w->final_request();
 
   coco_info("redirect to %s.", location.c_str());
@@ -1491,15 +1491,26 @@ bool HttpServeMux::path_match(std::string pattern, std::string path) {
 HttpServerConn::HttpServerConn(ConnManager *mgr, TcpConn *conn,
                                HttpServeMux *mux)
     : ConnRoutine(mgr) {
-  _conn = conn;
+  conn_ = conn;
   _mux = mux;
   _parser = new HttpParser();
+  https_ = false;
+}
+
+HttpServerConn::HttpServerConn(ConnManager *mgr, SslServer *conn,
+                               HttpServeMux *mux)
+    : ConnRoutine(mgr) {
+  conn_ = conn;
+  _mux = mux;
+  _parser = new HttpParser();
+  https_ = true;
 }
 
 HttpServerConn::~HttpServerConn() {
-  if (_conn) {
-    delete _conn;
-    _conn = nullptr;
+  coco_info("destruct httpserver conn");
+  if (conn_) {
+    delete conn_;
+    conn_ = nullptr;
   }
 
   if (_parser) {
@@ -1532,15 +1543,23 @@ int HttpServerConn::DoCycle() {
     coco_error("api initialize http parser failed. ret=%d", ret);
     return ret;
   }
-  _conn->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
+  conn_->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
 
-  // underlayer socket
-  CocoSocket *skt = _conn->GetCocoSocket();
+  if (https_) {
+    // ssl handshake
+    SslServer* ssl = reinterpret_cast<SslServer*>(conn_);
+    ret = ssl->Handshake("./server.key", "./server.crt");
+    if (ret != COCO_SUCCESS) {
+      coco_error("ssl handshake failed");
+      return ret;
+    }
+  }
+
   // process http messages.
   while (!ShouldTermCycle()) {
     HttpMessage *req = nullptr;
     // get a http message
-    if ((ret = _parser->parse_message(skt, this, &req)) != COCO_SUCCESS) {
+    if ((ret = _parser->parse_message(conn_, this, &req)) != COCO_SUCCESS) {
       return ret;
     }
     assert(req);
@@ -1549,7 +1568,7 @@ int HttpServerConn::DoCycle() {
     CocoAutoFree(HttpMessage, req);
 
     // ok, handle http request.
-    HttpResponseWriter writer(skt);
+    HttpResponseWriter writer(conn_);
     if ((ret = ProcessRequest(&writer, req)) != COCO_SUCCESS) {
       return ret;
     }
@@ -1558,7 +1577,7 @@ int HttpServerConn::DoCycle() {
     char buf[HTTP_READ_CACHE_BYTES];
     HttpResponseReader *br = req->body_reader();
     while (!br->eof()) {
-      if ((ret = br->read(buf, HTTP_READ_CACHE_BYTES, nullptr)) !=
+      if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, nullptr)) !=
           COCO_SUCCESS) {
         return ret;
       }
@@ -1574,9 +1593,10 @@ int HttpServerConn::DoCycle() {
 }
 
 /* HttpServer */
-HttpServer::HttpServer() {
+HttpServer::HttpServer(bool https) {
   _l = nullptr;
   _mux = nullptr;
+  https_ = https;
   manager = new ConnManager();
 }
 
@@ -1612,12 +1632,20 @@ int HttpServer::Serve(TcpListener *l, HttpServeMux *mux) {
 int HttpServer::Cycle() {
   while (true) {
     manager->Destroy();
-    TcpConn *_conn = _l->Accept();
-    if (_conn == nullptr) {
+
+    TcpConn *conn_ = _l->Accept();
+    if (conn_ == nullptr) {
       coco_error("get null conn");
       continue;
     }
-    HttpServerConn *conn = new HttpServerConn(manager, _conn, _mux);
+    HttpServerConn *conn = nullptr;
+    if (https_) {
+      auto ssl = new SslServer(conn_->GetStfd(), conn_);
+      conn = new HttpServerConn(manager, ssl, _mux);
+    } else {
+      conn = new HttpServerConn(manager, conn_, _mux);
+    }
+
     conn->Start();
   }
   return 0;
@@ -1626,7 +1654,7 @@ int HttpServer::Cycle() {
 HttpClient::HttpClient() {
   connected = false;
   stfd = nullptr;
-  skt = nullptr;
+  io_ = nullptr;
   parser = nullptr;
   timeout_us = 0;
   port = 0;
@@ -1686,7 +1714,7 @@ int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
      << HTTP_CRLF << req;
 
   std::string data = ss.str();
-  if ((ret = skt->write((void *)data.c_str(), data.length(), nullptr)) !=
+  if ((ret = io_->Write((void *)data.c_str(), data.length(), nullptr)) !=
       COCO_SUCCESS) {
     // disconnect when error.
     disconnect();
@@ -1696,7 +1724,7 @@ int HttpClient::post(std::string path, std::string req, HttpMessage **ppmsg,
   }
 
   HttpMessage *msg = nullptr;
-  if ((ret = parser->parse_message(skt, nullptr, &msg)) != COCO_SUCCESS) {
+  if ((ret = parser->parse_message(io_, nullptr, &msg)) != COCO_SUCCESS) {
     coco_error("http post. parse response failed. ret=%d", ret);
     return ret;
   }
@@ -1731,7 +1759,7 @@ int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
      << HTTP_CRLF << req;
 
   std::string data = ss.str();
-  if ((ret = skt->write((void *)data.c_str(), data.length(), nullptr)) !=
+  if ((ret = io_->Write((void *)data.c_str(), data.length(), nullptr)) !=
       COCO_SUCCESS) {
     // disconnect when error.
     disconnect();
@@ -1740,7 +1768,7 @@ int HttpClient::get(std::string path, std::string req, HttpMessage **ppmsg,
   }
 
   HttpMessage *msg = nullptr;
-  if ((ret = parser->parse_message(skt, nullptr, &msg)) != COCO_SUCCESS) {
+  if ((ret = parser->parse_message(io_, nullptr, &msg)) != COCO_SUCCESS) {
     coco_error("parse http post response failed. ret=%d", ret);
     return ret;
   }
@@ -1776,7 +1804,8 @@ int HttpClient::connect() {
   coco_info("connect to server success. server=%s, port=%d", host.c_str(),
             port);
 
-  assert(!skt);
+  assert(!io_);
+  io_ =  conn->GetCocoSocket();
   conn->SetRecvTimeout(timeout_us);
   conn->SetSendTimeout(timeout_us);
   connected = true;

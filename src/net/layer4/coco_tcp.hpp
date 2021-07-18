@@ -14,17 +14,7 @@ public:
   virtual ~TcpConn() = default;
 
 public:
-  /**
-   * @param nread, the actual read bytes, ignore if NULL.
-   */
-  virtual int Read(void *buf, size_t size, ssize_t *nread);
-  virtual int ReadFully(void *buf, size_t size, ssize_t *nread);
-  /**
-   * @param nwrite, the actual write bytes, ignore if NULL.
-   */
-  virtual int Write(void *buf, size_t size, ssize_t *nwrite);
-  virtual int Writev(const iovec *iov, int iov_size, ssize_t *nwrite);
-  std::string RemoteAddr();
+  virtual std::string RemoteAddr();
 };
 
 class TcpListener {

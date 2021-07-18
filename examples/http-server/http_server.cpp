@@ -28,17 +28,9 @@ int DefHandler::serve_http(HttpResponseWriter *w, HttpMessage *r) {
   w->header()->set_content_length((int)res.length());
   w->header()->set_content_type("text/jsonp");
 
-  w->write(const_cast<char *>(res.c_str()), (int)res.length());
+  w->Write(const_cast<char *>(res.c_str()), (int)res.length());
 
   return COCO_SUCCESS;
-}
-
-void mainloop() {
-  uint32_t dur = 1000 * 2000;
-  while (true) {
-    coco_info("sleep %u us", dur);
-    st_usleep(dur);
-  }
 }
 
 int main() {
@@ -49,7 +41,8 @@ int main() {
   std::string _ip = "0.0.0.0";
   int32_t _port = 9082;
 
-  auto httpServer = std::unique_ptr<HttpServer>(new HttpServer);
+  // if https is true, start as https server, or http server
+  auto httpServer = std::unique_ptr<HttpServer>(new HttpServer(true));
   auto _mux = std::unique_ptr<HttpServeMux>(new HttpServeMux());
   _mux->handle("/", new DefHandler());
   if (httpServer->ListenAndServe(_ip, _port, _mux.get()) != 0) {
@@ -58,7 +51,7 @@ int main() {
   }
   httpServer->Start();
 
-  mainloop();
+  CocoLoopMs(1000);
 
   return 0;
 }

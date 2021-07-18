@@ -14,10 +14,6 @@ public:
   UdpConn(st_netfd_t stfd, struct sockaddr &addr, socklen_t len);
   virtual ~UdpConn() = default;
 
-  virtual int RecvFrom(void *buf, int size, ssize_t *nread,
-                       struct sockaddr *from, int *fromlen);
-  virtual int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to,
-                     int tolen);
 
   virtual int Read(void *buf, int size, ssize_t *nread) {
     return RecvFrom(buf, size, nread, &dst_addr, &dst_addr_len);

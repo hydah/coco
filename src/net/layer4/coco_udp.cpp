@@ -19,16 +19,6 @@ UdpConn::UdpConn(st_netfd_t stfd, struct sockaddr &addr, socklen_t len)
   dst_addr_len = len;
 }
 
-int UdpConn::RecvFrom(void *buf, int size, ssize_t *nread,
-                      struct sockaddr *from, int *fromlen) {
-  return skt_->recvfrom(buf, size, nread, from, fromlen);
-}
-
-int UdpConn::SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to,
-                    int tolen) {
-  return skt_->sendto(buf, size, nwrite, to, tolen);
-}
-
 UdpListener::UdpListener(UdpConn *conn) {
   coco_dbg("enter udp listener construction");
   conn_ = conn;

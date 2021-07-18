@@ -14,22 +14,6 @@
 
 TcpConn::TcpConn(st_netfd_t stfd) : StreamConn(stfd) {}
 
-int TcpConn::Read(void *buf, size_t size, ssize_t *nread) {
-  return skt_->read(buf, size, nread);
-}
-
-int TcpConn::ReadFully(void *buf, size_t size, ssize_t *nread) {
-  return skt_->read_fully(buf, size, nread);
-}
-
-int TcpConn::Write(void *buf, size_t size, ssize_t *nwrite) {
-  return skt_->write(buf, size, nwrite);
-}
-
-int TcpConn::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
-  return skt_->writev(iov, iov_size, nwrite);
-}
-
 std::string TcpConn::RemoteAddr() {
   auto fd = skt_->get_osfd();
   return GetRemoteAddr(fd);
