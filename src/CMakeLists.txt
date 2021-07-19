@@ -6,6 +6,7 @@ aux_source_directory(./base SRCS)
 aux_source_directory(./common SRCS)
 aux_source_directory(./log SRCS)
 aux_source_directory(./net SRCS)
+aux_source_directory(./protocol/http SRCS)
 aux_source_directory(./net/layer4 SRCS)
 aux_source_directory(./utils SRCS)
 
