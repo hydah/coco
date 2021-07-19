@@ -19,55 +19,55 @@ class HttpMessage;
 // and that the HTTP server can move on to the next request on
 // the connection.
 class IHttpHandler {
-public:
-  HttpMuxEntry *entry;
+ public:
+    HttpMuxEntry *entry;
 
-public:
-  IHttpHandler();
-  virtual ~IHttpHandler();
+ public:
+    IHttpHandler();
+    virtual ~IHttpHandler();
 
-public:
-  virtual bool is_not_found();
-  virtual int serve_http(HttpResponseWriter *w, HttpMessage *r) = 0;
+ public:
+    virtual bool is_not_found();
+    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r) = 0;
 };
 
 // Redirect to a fixed URL
 class HttpRedirectHandler : public IHttpHandler {
-private:
-  std::string url;
-  int code;
+ private:
+    std::string url;
+    int code;
 
-public:
-  HttpRedirectHandler(std::string u, int c);
-  virtual ~HttpRedirectHandler();
+ public:
+    HttpRedirectHandler(std::string u, int c);
+    virtual ~HttpRedirectHandler();
 
-public:
-  virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+ public:
+    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
 };
 
 // NotFound replies to the request with an HTTP 404 not found error.
 class HttpNotFoundHandler : public IHttpHandler {
-public:
-  HttpNotFoundHandler();
-  virtual ~HttpNotFoundHandler();
+ public:
+    HttpNotFoundHandler();
+    virtual ~HttpNotFoundHandler();
 
-public:
-  virtual bool is_not_found();
-  virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+ public:
+    virtual bool is_not_found();
+    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
 };
 
 // the mux entry for server mux.
 // the matcher info, for example, the pattern and handler.
 class HttpMuxEntry {
-public:
-  bool explicit_match;
-  IHttpHandler *handler;
-  std::string pattern;
-  bool enabled;
+ public:
+    bool explicit_match;
+    IHttpHandler *handler;
+    std::string pattern;
+    bool enabled;
 
-public:
-  HttpMuxEntry();
-  virtual ~HttpMuxEntry();
+ public:
+    HttpMuxEntry();
+    virtual ~HttpMuxEntry();
 };
 
 // ServeMux is an HTTP request multiplexer.
@@ -98,42 +98,42 @@ public:
 // redirecting any request containing . or .. elements to an
 // equivalent .- and ..-free URL.
 class HttpServeMux {
-private:
-  // the pattern handler, to handle the http request.
-  std::map<std::string, HttpMuxEntry *> entries;
-  // the vhost handler.
-  // when find the handler to process the request,
-  // append the matched vhost when pattern not starts with /,
-  // for example, for pattern /live/livestream.flv of vhost ossrs.net,
-  // the path will rewrite to ossrs.net/live/livestream.flv
-  std::map<std::string, IHttpHandler *> vhosts;
-  void *connection_;
+ private:
+    // the pattern handler, to handle the http request.
+    std::map<std::string, HttpMuxEntry *> entries;
+    // the vhost handler.
+    // when find the handler to process the request,
+    // append the matched vhost when pattern not starts with /,
+    // for example, for pattern /live/livestream.flv of vhost ossrs.net,
+    // the path will rewrite to ossrs.net/live/livestream.flv
+    std::map<std::string, IHttpHandler *> vhosts;
+    void *connection_;
 
-public:
-  HttpServeMux();
-  virtual ~HttpServeMux();
+ public:
+    HttpServeMux();
+    virtual ~HttpServeMux();
 
-public:
-  /**
-   * initialize the http serve mux.
-   */
-  virtual int initialize();
-  void SetConnection(void *connection) { this->connection_ = connection; };
+ public:
+    /**
+     * initialize the http serve mux.
+     */
+    virtual int initialize();
+    void SetConnection(void *connection) { this->connection_ = connection; };
 
-public:
-  // Handle registers the handler for the given pattern.
-  // If a handler already exists for pattern, Handle panics.
-  virtual int handle(std::string pattern, IHttpHandler *handler);
-  virtual void remove_entry(std::string pattern);
-  // whether the http muxer can serve the specified message,
-  // if not, user can try next muxer.
-  virtual bool can_serve(HttpMessage *r);
+ public:
+    // Handle registers the handler for the given pattern.
+    // If a handler already exists for pattern, Handle panics.
+    virtual int handle(std::string pattern, IHttpHandler *handler);
+    virtual void remove_entry(std::string pattern);
+    // whether the http muxer can serve the specified message,
+    // if not, user can try next muxer.
+    virtual bool can_serve(HttpMessage *r);
 
-public:
-  virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+ public:
+    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
 
-private:
-  virtual int find_handler(HttpMessage *r, IHttpHandler **ph);
-  virtual int match(HttpMessage *r, IHttpHandler **ph);
-  virtual bool path_match(std::string pattern, std::string path);
+ private:
+    virtual int find_handler(HttpMessage *r, IHttpHandler **ph);
+    virtual int match(HttpMessage *r, IHttpHandler **ph);
+    virtual bool path_match(std::string pattern, std::string path);
 };

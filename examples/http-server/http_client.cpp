@@ -13,25 +13,26 @@ string server_ip = "127.0.0.1";
 int port = 9082;
 
 int main() {
-  int ret = COCO_SUCCESS;
+    int ret = COCO_SUCCESS;
 
-  CocoInit();
+    CocoInit();
 
-  HttpClient hc;
-  hc.Initialize(true, server_ip, port);
-  HttpMessage *msg;
-  ret = hc.Get("/", "", &msg, "");
-  if (ret != COCO_SUCCESS) {
-    coco_error("https get error: %d", ret);
-  }
+    HttpClient hc;
+    hc.Initialize(true, server_ip, port);
+    HttpMessage *msg;
+    ret = hc.Get("/", "", &msg, "");
+    if (ret != COCO_SUCCESS) {
+        coco_error("https get error: %d", ret);
+        return 0;
+    }
 
-  std::string body;
-  ret = msg->body_read_all(body);
-  if (ret != COCO_SUCCESS) {
-    coco_error("https body read error: %d", ret);
-  } else {
-    coco_info("body is %s", body.c_str());
-  }
+    std::string body;
+    ret = msg->body_read_all(body);
+    if (ret != COCO_SUCCESS) {
+        coco_error("https body read error: %d", ret);
+    } else {
+        coco_info("body is %s", body.c_str());
+    }
 
-  return 0;
+    return 0;
 }

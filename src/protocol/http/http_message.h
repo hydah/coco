@@ -98,17 +98,16 @@ private:
   // parsed http header.
   http_parser *header_;
   std::vector<HttpHeaderField> *headers_;
-  HttpParser *parser_;
+  HttpParser *parser_ = nullptr;
   /**
    * uri parser
    */
-  HttpUri *_uri;
+  HttpUri *_uri = nullptr;
   /**
    * body object, reader object.
    * @remark, user can get body in string by get_body().
    */
-  HttpResponseReader *_body;
-  FastBuffer *buffer;
+  HttpResponseReader *_body = nullptr;
 
   // parsed url.
   std::string _url;

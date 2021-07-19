@@ -23,9 +23,8 @@ extern std::string get_public_internet_address();
 #define coco_freep(p)                                                          \
   if (p) {                                                                     \
     delete p;                                                                  \
-    p = NULL;                                                                  \
-  }                                                                            \
-  (void)0
+    p = nullptr;                                                               \
+  }                                                                            
 // please use the freepa(T[]) to free an array,
 // or the behavior is undefined.
 #define coco_freepa(pa)                                                        \
