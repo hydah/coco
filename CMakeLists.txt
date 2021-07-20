@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 2.6)
 
 project(coco C CXX)
 
-
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
@@ -33,6 +32,7 @@ set(CXX_FLAGS
  -rdynamic
 #  -fPIC
  )
+ 
 if(CMAKE_BUILD_BITS EQUAL 32)
   list(APPEND CXX_FLAGS "-m32")
 endif()
@@ -47,6 +47,7 @@ string(REPLACE ";" " " CMAKE_CXX_FLAGS "${CXX_FLAGS}")
 
 set(CMAKE_CXX_FLAGS_DEBUG "-O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-O0 -DNDEBUG")
+
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 
@@ -54,32 +55,22 @@ set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 string(TOUPPER ${CMAKE_BUILD_TYPE} BUILD_TYPE)
 message(STATUS "CXX_FLAGS = " ${CMAKE_CXX_FLAGS} " " ${CMAKE_CXX_FLAGS_${BUILD_TYPE}})
 
-# st lib
-message("generate st lib" ${PROJECT_SOURCE_DIR}/st/obj)
-set(ST_OBJ_DIR ${PROJECT_SOURCE_DIR}/st/obj)
-if (${ST_OBJ_DIR}/libst.a)
-        message("st-1.9t is ok.")
-else()
-        message("build st-1.9t")
-        execute_process(
-            COMMAND bash -c "cd ${PROJECT_SOURCE_DIR}/st && chmod +w * &&
-            make linux-debug EXTRA_CFLAGS='-DMD_HAVE_EPOLL'"
-        )
-endif()
-include_directories(${PROJECT_SOURCE_DIR})
-set(LIB_ST  ${ST_OBJ_DIR}/libst.a)
-install(FILES ${ST_OBJ_DIR}/st.h DESTINATION include)
-install(FILES ${ST_OBJ_DIR}/libst.a DESTINATION lib)
+
+set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
+set(ST ${THIRDPARTY}/st)
+
+
+include(cmake/openssl.cmake)
+include(cmake/st.cmake)
 
 #http parser
-set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
-include_directories(${THIRDPARTY}/http-parser)
-
-
+include_directories(${THIRDPARTY})
+include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/src)
 
 add_subdirectory(src)
 
 if(COCO_BUILD_EXAMPLES)
+  link_directories(${LIB}/openssl/lib)
   add_subdirectory(examples)
 endif()

@@ -115,7 +115,7 @@ void CoCoroutine::stop() {
         void *res = NULL;
         int ret = st_thread_join((st_thread_t)trd_, &res);
         coco_trace("join ret is %d", ret);
-        assert(ret);
+        // assert(ret);
 
         int err_res = *(int *)res;
         if (err_res != COCO_SUCCESS) {

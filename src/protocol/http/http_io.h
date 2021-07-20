@@ -1,7 +1,7 @@
 #pragma once
 #include <sstream>
 
-#include "thirdparty/http-parser/http_parser.h"
+#include "http_parser.h"
 
 #include "protocol/http/http_basic.h"
 #include "protocol/http/http_message.h"

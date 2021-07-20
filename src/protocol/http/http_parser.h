@@ -1,7 +1,7 @@
 #pragma once
 #include <map>
 
-#include "thirdparty/http-parser/http_parser.h"
+#include "http-parser/http_parser.h"
 
 #include "protocol/http/http_basic.h"
 #include "utils/utils.hpp"

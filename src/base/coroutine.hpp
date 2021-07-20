@@ -2,7 +2,7 @@
 
 #include <map>
 
-#include "st/obj/st.h"
+#include "st.h"
 
 #include "base/coroutine_mgr.hpp"
 #include "common/error.hpp"

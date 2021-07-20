@@ -1,7 +1,7 @@
 #pragma once
 #include <sstream>
 
-#include "thirdparty/http-parser/http_parser.h"
+#include "http-parser/http_parser.h"
 
 #include "net/layer4/coco_ssl.hpp"
 #include "net/layer4/coco_tcp.hpp"
