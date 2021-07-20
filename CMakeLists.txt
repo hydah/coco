@@ -49,7 +49,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "-O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-O0 -DNDEBUG")
 
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
-set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
+set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 
 
 string(TOUPPER ${CMAKE_BUILD_TYPE} BUILD_TYPE)
@@ -64,8 +64,8 @@ include(cmake/openssl.cmake)
 include(cmake/st.cmake)
 
 #http parser
-include_directories(${THIRDPARTY})
-include_directories(${PROJECT_SOURCE_DIR})
+exec_program(${CMAKE_COMMAND} ARGS -E copy ${THIRDPARTY}/http-parser/http_parser.h ${PROJECT_SOURCE_DIR}/lib/http-parser/http_parser.h)
+include_directories(${PROJECT_SOURCE_DIR}/lib)
 include_directories(${PROJECT_SOURCE_DIR}/src)
 
 add_subdirectory(src)
