@@ -20,5 +20,5 @@ set(SRCS
 add_library(coco ${SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
 # 添加链接库
 target_link_libraries(coco libst.a pthread)
-set_property(TARGET slog_client PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET coco PROPERTY POSITION_INDEPENDENT_CODE ON)
 install(TARGETS coco ARCHIVE DESTINATION ${PROJECT_SOURCE_DIR}/dist/lib)

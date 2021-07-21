@@ -149,9 +149,9 @@ int SslServer::Handshake(std::string key_file, std::string crt_file) {
     OPENSSL_init_ssl(0, NULL);
 #endif
     // For HTTPS, try to connect over security transport.
-#if (OPENSSL_VERSION_NUMBER < 0x10002000L)  // v1.0.2
-    ssl_ctx = SSL_CTX_new(TLS_method());
-    coco_info("ssl v1.0.2");
+#if (OPENSSL_VERSION_NUMBER <= 0x100020cfL)  // v1.0.2
+    ssl_ctx = SSL_CTX_new(TLSv1_method());
+    coco_info("ssl v1.0.2l");
 #else
     ssl_ctx = SSL_CTX_new(TLS_method());
     coco_info("ssl v1.1.1");
@@ -323,9 +323,9 @@ int SslClient::Handshake() {
     OPENSSL_init_ssl(0, NULL);
 #endif
     // For HTTPS, try to connect over security transport.
-#if (OPENSSL_VERSION_NUMBER < 0x10002000L)  // v1.0.2
-    ssl_ctx = SSL_CTX_new(TLS_method());
-    coco_info("ssl v1.0.2");
+#if (OPENSSL_VERSION_NUMBER <= 0x100020cfL)  // v1.0.2
+    ssl_ctx = SSL_CTX_new(TLSv1_method());
+    coco_info("ssl v1.0.2l");
 #else
     ssl_ctx = SSL_CTX_new(TLS_method());
     coco_info("ssl v1.1.1");
