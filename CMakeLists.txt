@@ -11,8 +11,8 @@ if(CMAKE_PROJECT_NAME STREQUAL "coco")
   option(COCO_BUILD_EXAMPLES "Build coco examples" ON)
 endif()
 
-set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O0 -Wall -Wno-literal-suffix -fno-ident -D_GNU_SOURCE -D_REENTRNT -g -ggdb")
-set(CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(abspath $<))\"'")
+set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -Wno-literal-suffix -fno-ident -D_GNU_SOURCE -D_REENTRNT -g -ggdb")
+set(CXX_FLAGS "${CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(abspath $<))\"'")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
  
 if(CMAKE_BUILD_BITS EQUAL 32)
