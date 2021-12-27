@@ -186,67 +186,29 @@ int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
     if ((is_https_) && (80 == port_)) {
         port_ = 443;
     }
+    method_ = "GET";
+
     return ret;
 }
 
-int HttpClient::Post(std::string path, std::string req, HttpMessage **ppmsg,
-                     std::string request_id) {
-    *ppmsg = nullptr;
+bool HttpClient::SetMethod(std::string method) { method_ = method; }
+bool HttpClient::SetHeader(std::string key, std::string value) { http_header_.set(key, value); }
 
+int HttpClient::SendRequest() {
     int ret = COCO_SUCCESS;
 
     if ((ret = Connect()) != COCO_SUCCESS) {
-        coco_warn("http post. connect server failed. [host:%s, port:%d]ret=%d", host_.c_str(),
-                  port_, ret);
+        coco_warn("http %s. connect server failed. [host:%s, port:%d]ret=%d", method_.c_str(),
+                  host_.c_str(), port_, ret);
         return ret;
     }
 
-    // send POST request to uri
-    // POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s
     std::stringstream ss;
-    ss << "POST " << path << " "
-       << "HTTP/1.1" << HTTP_CRLF << "Host: " << host_ << HTTP_CRLF << "Request-Id: " << request_id
-       << HTTP_CRLF << "Connection: Keep-Alive" << HTTP_CRLF << "Content-Length: " << std::dec
-       << req.length() << HTTP_CRLF << "User-Agent: "
-       << "coco" << HTTP_CRLF << "Content-Type: application/json" << HTTP_CRLF << HTTP_CRLF << req;
-
-    std::string data = ss.str();
-    if ((ret = conn_->Write((void *)data.c_str(), data.length(), nullptr)) != COCO_SUCCESS) {
-        // disconnect when error.
-        Disconnect();
-
-        coco_error("http post. write failed. ret=%d", ret);
-        return ret;
+    ss << method_ << " " << path_ << " "
+       << "HTTP/1.1" << HTTP_CRLF << http_header_.Encode() << HTTP_CRLF;
+    if (!req_.empty()) {
+        ss << req_;
     }
-
-    if ((ret = http_msg_->Parse(conn_, nullptr)) != COCO_SUCCESS) {
-        coco_error("http post. parse response failed. ret=%d", ret);
-        return ret;
-    }
-    coco_info("http post. parse response success.");
-    *ppmsg = http_msg_;
-    return ret;
-}
-
-int HttpClient::Get(std::string path, std::string req, HttpMessage **ppmsg,
-                    std::string request_id) {
-    *ppmsg = nullptr;
-
-    int ret = COCO_SUCCESS;
-
-    if ((ret = Connect()) != COCO_SUCCESS) {
-        coco_warn("http connect server failed. ret=%d", ret);
-        return ret;
-    }
-
-    // send POST request to uri
-    // GET %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s
-    std::stringstream ss;
-    ss << "GET " << path << " "
-       << "HTTP/1.1" << HTTP_CRLF << "Host: " << host_ << HTTP_CRLF << "Request-Id: " << request_id
-       << HTTP_CRLF << "Connection: Keep-Alive" << HTTP_CRLF << "Content-Length: " << std::dec
-       << req.length() << HTTP_CRLF << "User-Agent: "
-       << "coco" << HTTP_CRLF << "Content-Type: application/json" << HTTP_CRLF << HTTP_CRLF << req;
 
     std::string data = ss.str();
     if ((ret = conn_->Write((void *)data.c_str(), data.length(), nullptr)) != COCO_SUCCESS) {
@@ -257,9 +219,58 @@ int HttpClient::Get(std::string path, std::string req, HttpMessage **ppmsg,
     }
 
     if ((ret = http_msg_->Parse(conn_, nullptr)) != COCO_SUCCESS) {
-        coco_error("parse http post response failed. ret=%d", ret);
+        coco_error("http post. parse response failed. ret=%d", ret);
         return ret;
     }
+
+    return ret;
+}
+
+int HttpClient::Post(std::string path, std::string req, HttpMessage **ppmsg,
+                     std::string request_id) {
+    int ret = COCO_SUCCESS;
+
+    method_ = "POST";
+    path_ = path;
+    req_ = req;
+    *ppmsg = nullptr;
+
+    SetHeader("Host", host_);
+    SetHeader("Request-Id", request_id);
+    SetHeader("Connection", "Keep-Alive");
+    SetHeader("Content-Length", std::to_string(req.length()));
+    SetHeader("User-Agent", "coco");
+    SetHeader("Content-Type", "application/json");
+
+    if ((ret = SendRequest()) != COCO_SUCCESS) {
+        return ret;
+    }
+
+    coco_info("http post. parse response success.");
+    *ppmsg = http_msg_;
+    return ret;
+}
+
+int HttpClient::Get(std::string path, std::string req, HttpMessage **ppmsg,
+                    std::string request_id) {
+    int ret = COCO_SUCCESS;
+
+    method_ = "GET";
+    path_ = path;
+    req_ = req;
+    *ppmsg = nullptr;
+
+    SetHeader("Host", host_);
+    SetHeader("Request-Id", request_id);
+    SetHeader("Connection", "Keep-Alive");
+    SetHeader("Content-Length", std::to_string(req.length()));
+    SetHeader("User-Agent", "coco");
+    SetHeader("Content-Type", "application/json");
+
+    if ((ret = SendRequest()) != COCO_SUCCESS) {
+        return ret;
+    }
+
     coco_info("parse http get response success.");
     *ppmsg = http_msg_;
 
@@ -307,3 +318,5 @@ int HttpClient::Connect() {
 
     return ret;
 }
+
+StreamConn *HttpClient::GetUnderlayerConn() { return conn_; }

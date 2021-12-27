@@ -13,6 +13,7 @@ aux_source_directory(./utils SRCS)
 set(SRCS
     ${SRCS}
     ./net/layer7/coco_http.cpp
+    ./net/layer7/coco_ws.cpp
 )
 
 

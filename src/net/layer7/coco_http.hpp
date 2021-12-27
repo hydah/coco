@@ -58,8 +58,16 @@ class HttpClient {
     /**
      * initialize the client, connect to host and port.
      */
-    virtual int Initialize(bool is_https, std::string h, int p,
-                           int64_t t_us = HTTP_CLIENT_TIMEOUT_US);
+    int Initialize(bool is_https, std::string h, int p, int64_t t_us = HTTP_CLIENT_TIMEOUT_US);
+    bool SetMethod(std::string method);
+    bool SetHeader(std::string key, std::string value);
+    virtual int SendRequest();
+    virtual void Disconnect();
+    virtual int Connect();
+    void SetPath(std::string path) { path_ = path; };
+    HttpMessage *GetHttpMessage() { return http_msg_; };
+    StreamConn *GetUnderlayerConn();
+
     /**
      * to post data to the uri.
      * @param the path to request on.
@@ -80,9 +88,8 @@ class HttpClient {
                     std::string request_id = "");
 
  private:
-    virtual void Disconnect();
-    virtual int Connect();
-
+    std::string method_;
+    HttpHeader http_header_;
     StreamConn *conn_ = nullptr;
     HttpMessage *http_msg_ = nullptr;
     bool connected_ = false;
@@ -91,4 +98,6 @@ class HttpClient {
     // host name or ip.
     std::string host_ = "";
     int port_ = -1;
+    std::string path_;
+    std::string req_;
 };
