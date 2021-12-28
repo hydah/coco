@@ -9,8 +9,8 @@
 
 using namespace std;
 
-string server_ip = "127.0.0.1";
-int port = 3000;
+string server_ip = "183.2.143.77";
+int port = 443;
 int OnMessage(WebSocketConn* conn, std::unique_ptr<WebSocektMessage> msg) {
     std::cout << "get " << msg->data_ << endl;
 }
@@ -22,7 +22,7 @@ int main() {
 
     WebSocketClient ws_client;
     ws_client.SetMessageHandler(OnMessage);
-    ws_client.Start(false, server_ip, port, "/");
+    ws_client.Start(true, server_ip, port, "/");
 
     std::string msg = "hello ws";
     std::cout << "send hello ws" << std::endl;

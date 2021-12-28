@@ -259,9 +259,9 @@ int WebSocketConn::DoCycle() {
     // process websocket messages.
     while (!ShouldTermCycle()) {
         char buf[HTTP_READ_CACHE_BYTES];
-        ssize_t nb_read = 0;
+        int nb_read = 0;
 
-        if ((ret = conn_->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
+        if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
             return ret;
         }
 

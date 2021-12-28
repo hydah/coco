@@ -316,16 +316,8 @@ int HttpResponseReader::Read(char *data, int nb_data, int *nb_read) {
     }
 
     // infinite chunked mode, directly read.
-    if (owner->is_infinite_chunked()) {
-        assert(!owner->is_chunked() && owner->content_length() == -1);
-        return ReadSpecified(data, nb_data, nb_read);
-    }
-
-    // infinite chunked mode, but user not set it,
-    // we think there is no data left.
-    is_eof = true;
-
-    return ret;
+    assert(!owner->is_chunked() && owner->content_length() == -1);
+    return ReadSpecified(data, nb_data, nb_read);
 }
 
 int HttpResponseReader::ReadChunked(char *data, int nb_data, int *nb_read) {

@@ -1,19 +1,24 @@
-// 导入WebSocket模块:
-const WebSocketServer = require('ws').Server;
+'use strict'
+const https = require('https');
+const fs = require('fs');
+const ws = require('ws');
 
-// 实例化:
-const wss = new WebSocketServer({
-    port: 3000
+const options = {
+    key: fs.readFileSync('../../http-server/server.key'),
+    cert: fs.readFileSync('../../http-server/server.crt')
+};
+
+// const index = fs.readFileSync('./index.html');
+
+let server = https.createServer(options, (req, res) => {
+    res.writeHead(200);
+    // res.end(index);
 });
+server.addListener('upgrade', (req, res, head) => console.log('UPGRADE:', req.url));
+server.on('error', (err) => console.error(err));
+server.listen(3000, () => console.log('Https running on port 8000'));
 
-wss.on('connection', function (ws) {
-    console.log(`[SERVER] connection()`);
-    ws.on('message', function (message) {
-        console.log(`[SERVER] Received: ${message}`);
-        ws.send(`ECHO: ${message}`, (err) => {
-            if (err) {
-                console.log(`[SERVER] error: ${err}`);
-            }
-        });
-    })
+const wss = new ws.Server({ server, path: '/' });
+wss.on('connection', function connection(ws) {
+    ws.on('message', (data) => ws.send('Receive: ' + data));
 });
