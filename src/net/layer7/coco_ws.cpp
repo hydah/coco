@@ -262,6 +262,7 @@ int WebSocketConn::DoCycle() {
         int nb_read = 0;
 
         if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
+            coco_error("read error: %d", ret);
             return ret;
         }
 
@@ -328,6 +329,10 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
     conn_ = new WebSocketConn(this, manager_, http_client_->GetUnderlayerConn(), ws_http_msg_);
 
     return conn_->Start();
+}
+
+int WebSocketClient::Stop() {
+    conn_->Stop();
 }
 
 int WebSocketClient::HandleMessage(std::unique_ptr<WebSocektMessage> msg) {

@@ -131,6 +131,7 @@ class WebSocketClient {
      */
     int Start(bool is_wss, const std::string &host, uint16_t port, std::string path,
               uint64_t timeout_us = WS_CLIENT_TIMEOUT_US);
+    int Stop();
 
     void SetMessageHandler(WebsocketMessageHandler handler) { message_handler_ = handler; }
     int HandleMessage(std::unique_ptr<WebSocektMessage> msg);
