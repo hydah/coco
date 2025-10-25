@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git submodule:*)",
+      "Bash(make:*)",
+      "Bash(cmake:*)",
+      "Bash(./build.sh:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

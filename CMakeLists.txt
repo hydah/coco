@@ -11,12 +11,33 @@ if(CMAKE_PROJECT_NAME STREQUAL "coco")
   option(COCO_BUILD_EXAMPLES "Build coco examples" ON)
 endif()
 
-set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -Wno-literal-suffix -fno-ident -D_GNU_SOURCE -D_REENTRNT -g -ggdb")
+# Platform detection and configuration
+if(APPLE)
+    # Build only for native architecture on macOS to avoid SDK issues
+    add_definitions(-D__APPLE__)
+    add_definitions(-D_DARWIN_C_SOURCE)
+elseif(UNIX AND NOT APPLE)
+    add_definitions(-D_GNU_SOURCE)
+    add_definitions(-D_REENTRNT)
+endif()
+
+# Architecture detection
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    set(ARCH_ARM64 TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(ARCH_X86_64 TRUE)
+endif()
+
+set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -fno-ident -g -ggdb")
 set(CXX_FLAGS "${CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(abspath $<))\"'")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
  
-if(CMAKE_BUILD_BITS EQUAL 32)
-  list(APPEND CXX_FLAGS "-m32")
+# Architecture-specific flags
+if(APPLE)
+    # macOS-specific flags - let the compiler choose the native architecture
+    list(APPEND CXX_FLAGS "-mmacosx-version-min=10.15")
+elseif(CMAKE_BUILD_BITS EQUAL 32)
+    list(APPEND CXX_FLAGS "-m32")
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   list(APPEND CXX_FLAGS "-Wno-null-dereference")

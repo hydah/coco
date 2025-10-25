@@ -257,6 +257,17 @@ bool st_epoll_is_supported(void) {
 
     return (errno != ENOSYS);
 }
+#elif defined(__APPLE__)
+#include <sys/event.h>
+
+bool st_kqueue_is_supported(void) {
+    int kq = kqueue();
+    if (kq == -1) {
+        return false;
+    }
+    close(kq);
+    return true;
+}
 #endif
 
 int CocoInit() {
@@ -268,6 +279,13 @@ int CocoInit() {
     if (!st_epoll_is_supported()) {
         ret = ERROR_ST_SET_EPOLL;
         coco_error("epoll required on Linux. ret=%d", ret);
+        return ret;
+    }
+#elif defined(__APPLE__)
+    // check kqueue, ensure kqueue is available on macOS
+    if (!st_kqueue_is_supported()) {
+        ret = ERROR_ST_SET_EPOLL;
+        coco_error("kqueue required on macOS. ret=%d", ret);
         return ret;
     }
 #endif
@@ -298,7 +316,7 @@ int CocoInit() {
 
 void CocoLoopMs(uint64_t dur) {
     while (true) {
-        coco_dbg("sleep %ld ms", dur);
+        coco_dbg("sleep %llu ms", (unsigned long long)dur);
         st_usleep(dur * 1000);
     }
 }

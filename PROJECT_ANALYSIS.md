@@ -342,4 +342,132 @@ class ProtocolParser {
 
 ---
 
+## macOS/ARM Build Instructions
+
+### Platform Support
+The project now supports macOS on both Intel (x86_64) and Apple Silicon (ARM64) architectures.
+
+### Key Changes for macOS Compatibility
+
+1. **Event System**: Automatically uses kqueue instead of epoll on macOS
+2. **Assembly Code**: Fixed GNU assembler directives for macOS compatibility
+3. **Platform Detection**: Added proper macOS platform detection in CMake
+4. **OpenSSL**: Updated configuration for macOS builds
+5. **State Threads**: Added ARM64 support to state-threads library
+6. **Architecture Handling**: Sophisticated detection of Rosetta 2 and mixed environments
+
+### Enhanced Build Script Features
+
+The build script (`build.sh`) now includes:
+
+- **Automatic Architecture Detection**: Detects native ARM64 vs x86_64 under Rosetta 2
+- **Compiler Architecture Validation**: Checks for architecture mismatches and warns appropriately
+- **SDK Path Resolution**: Automatically finds and configures the correct macOS SDK
+- **Rosetta 2 Handling**: Properly configures builds when running under translation layer
+- **Architecture-Specific Configuration**: Forces correct architecture flags for mixed environments
+
+### Build Instructions
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd coco
+
+# Initialize submodules
+git submodule update --init --recursive
+
+# Build with the enhanced script
+chmod +x build.sh
+./build.sh
+
+# Or with verbose output to see architecture detection
+./build.sh -v
+```
+
+### Architecture Detection Examples
+
+The build script will show architecture information:
+
+**Native ARM64 (Apple Silicon)**:
+```
+Platform: macos (arm64)
+```
+
+**x86_64 under Rosetta 2**:
+```
+Platform: macos (arm64 (running under Rosetta 2))
+Note: Running under Rosetta 2 translation layer
+Native architecture: arm64, Current architecture: x86_64
+Warning: Running x86_64 compiler under Rosetta 2 on ARM64 system
+```
+
+### Verification
+
+After building, you should see:
+- `st_set_eventsys to kqueue` in the logs (indicating macOS event system is used)
+- Successful compilation of all examples
+- Working network servers on macOS
+- Architecture-appropriate binaries in `build/bin/`
+
+### Architecture Troubleshooting
+
+The build script now provides comprehensive architecture handling for all Apple Silicon scenarios:
+
+**Automatic Detection and Resolution:**
+1. **Native ARM64 with x86_64 tools** (Most common): Automatically detects and configures x86_64 build
+2. **Running under Rosetta 2**: Properly detects and handles translation layer
+3. **Mixed architecture environments**: Provides clear warnings and appropriate configuration
+4. **Compiler architecture validation**: Tests each compiler and determines its architecture
+
+**Common Issues and Solutions:**
+
+1. **"Error: No working C++ compiler found" on Apple Silicon**
+   - **Cause**: Running native ARM64 but having only x86_64 development tools
+   - **Solution**: The script now automatically detects this and configures for x86_64
+   - **Output**: `Platform: macos (arm64 (x86_64 tools))`
+
+2. **xcrun architecture mismatch**
+   - **Cause**: ARM64 shell with x86_64 Xcode tools
+   - **Solution**: Automatically handled with proper SDK configuration
+
+3. **Architecture-specific build failures**
+   - **Solution**: Multiple fallback mechanisms and clear error messages
+
+**Manual Control Options:**
+```bash
+# Force x86_64 build on ARM64 system
+arch -x86_64 ./build.sh
+
+# Install native ARM64 Xcode tools
+xcode-select --install
+
+# Install ARM64 compilers via Homebrew
+brew install gcc
+```
+
+**Architecture Detection Output Examples:**
+
+**Native ARM64 with x86_64 tools**:
+```
+Platform: macos (arm64 (x86_64 tools))
+Warning: ARM64 system with x86_64 development tools detected
+The build will be configured for x86_64 architecture
+```
+
+**Running under Rosetta 2**:
+```
+Platform: macos (arm64 (running under Rosetta 2))
+Note: Running under Rosetta 2 translation layer
+Native architecture: arm64, Current architecture: x86_64
+```
+
+**Native ARM64 with ARM64 tools**:
+```
+Platform: macos (arm64)
+```
+
+The build system is designed to work seamlessly across all Apple Silicon configurations, providing optimal compatibility and clear guidance for resolution of any architecture-related issues.
+
+---
+
 *This document should be updated as the project evolves and new patterns or requirements emerge.*
