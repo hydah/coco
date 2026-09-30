@@ -44,6 +44,7 @@ set(COCO_TEST_CASES
     WsDecodeStopsOnHandlerError
     WsClientAnswersPing
     WsClientAnswersClose
+    WsClientSendBlockedWhenReadSideEnds
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

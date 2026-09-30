@@ -87,7 +87,7 @@ int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
 
     host_ = _h;
     port_ = p;
-    timeout_us_ = HTTP_CLIENT_TIMEOUT_US;
+    timeout_us_ = t_us;
 
     is_https_ = is_https;
     // we just handle the default port when https

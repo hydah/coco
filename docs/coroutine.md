@@ -105,7 +105,8 @@ coroutine_fun(p):
 
 1. `Start()` 成功以后，任何其他代码都不能 `delete` 这个连接。`~CoCoroutine` 用断言检查这一点。
 2. `Start()` 失败时，对象仍归调用方，调用方负责 `delete`。
-3. 在连接之外保存它的指针，必须在连接析构时收到通知。`WebSocketClient` 的做法是：`~WebSocketConn` 调用 `OnConnClosed(this)`，客户端把 `conn_` 置空，之后 `Send` 返回错误，而不是访问已经释放的对象。
+3. 在连接之外保存它的指针，必须在连接析构时收到通知。`WebSocketClient` 的做法是：`~WebSocketConn` 调用 `OnConnClosed()`，客户端把 `conn_` 置空并标记为已关闭，之后 `Send` 返回 `ERROR_WS_CLOSED`，而不是访问已经释放的对象。
+4. 其他协程也会用到的资源，不能由自行释放的连接来释放。WebSocket 的写可以发生在用户自己的协程里，所以 socket 归 `WebSocketClient`，不归读协程 `WebSocketConn`：读协程退出时如果还有协程阻塞在 `Send` 的写上，socket 由最后一个写完的协程关闭。否则关闭一个仍有协程在等待的 fd，`st_netfd_close` 会失败。
 
 ## ConnManager
 

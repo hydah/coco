@@ -2,28 +2,23 @@
 #include "utils/base64.hpp"
 #include "utils/sha1.hpp"
 
-WebSocketConn::WebSocketConn(void *observer, ConnManager *mgr, StreamConn *conn, HttpMessage *r)
+WebSocketConn::WebSocketConn(WebSocketClient *client, ConnManager *mgr, StreamConn *conn,
+                             HttpMessage *r)
     : ConnRoutine(mgr),
+      client_(client),
+      conn_(conn),
+      http_msg_(r),
       decoder_([this](std::unique_ptr<WebSocektMessage> msg) {
           return ProcessMessage(std::move(msg));
-      }) {
-    conn_ = conn;
-    http_msg_ = r;
-    observer_ = observer;
-    write_lock_ = st_mutex_new();
-}
+      }) {}
 
 WebSocketConn::~WebSocketConn() {
     coco_info("destruct websocket conn");
-    if (observer_) {
-        ((WebSocketClient *)observer_)->OnConnClosed(this);
-    }
-    coco_freep(conn_);
-    coco_freep(http_msg_);
-    if (write_lock_) {
-        st_mutex_destroy(write_lock_);
-        write_lock_ = nullptr;
-    }
+    client_->OnConnClosed();
+}
+
+int WebSocketConn::Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
+    return client_->WriteFrame(buf, len, data_type);
 }
 
 int WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
@@ -44,30 +39,14 @@ int WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
             return COCO_SUCCESS;
 
         default:
-            if (observer_) {
-                ((WebSocketClient *)observer_)->HandleMessage(std::move(msg));
-            }
+            client_->HandleMessage(this, std::move(msg));
             return COCO_SUCCESS;
     }
 }
 
-int WebSocketConn::Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
-    WebSocketHeader header;
-    header._opcode = data_type;
-    //客户端需要加密
-    header._mask_flag = true;
-    std::string frame = EncodeWebSocketFrame(header, buf, len);
-
-    if (st_mutex_lock(write_lock_) != 0) {
-        return ERROR_THREAD_INTERRUPED;
-    }
-    int ret = conn_->Write((void *)frame.data(), frame.size(), nullptr);
-    st_mutex_unlock(write_lock_);
-    return ret;
-}
-
 int WebSocketConn::DoCycle() {
     int ret = COCO_SUCCESS;
+    // An idle connection is normal, so reads wait longer than the connect timeout.
     conn_->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
     HttpResponseReader *br = http_msg_->body_reader();
 
@@ -101,17 +80,32 @@ int WebSocketConn::DoCycle() {
     return ret;
 }
 
-WebSocketClient::WebSocketClient() { manager_ = new ConnManager(); }
+WebSocketClient::WebSocketClient() {
+    manager_ = new ConnManager();
+    write_lock_ = st_mutex_new();
+}
 
 WebSocketClient::~WebSocketClient() {
+    // The read coroutine uses the socket and the upgrade response until it has exited.
+    closed_ = true;
     if (manager_) {
         delete manager_;
         manager_ = nullptr;
+    }
+    coco_freep(http_client_);
+    stream_ = nullptr;
+    if (write_lock_) {
+        st_mutex_destroy(write_lock_);
+        write_lock_ = nullptr;
     }
 }
 
 int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, std::string path,
                            uint64_t timeout_us) {
+    if (http_client_ != nullptr) {
+        coco_error("websocket client already started");
+        return ERROR_THREAD_STARTED;
+    }
     http_client_ = new HttpClient();
 
     auto ret = http_client_->Initialize(is_wss, host, port, timeout_us);
@@ -133,13 +127,13 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
         return ret;
     }
 
-    ws_http_msg_ = http_client_->GetHttpMessage();
-    if (ws_http_msg_ == nullptr) {
+    HttpMessage *ws_http_msg = http_client_->GetHttpMessage();
+    if (ws_http_msg == nullptr) {
         coco_error("http msg is nullptr");
         return -1;
     }
 
-    if (ws_http_msg_->status_code() != 101) {
+    if (ws_http_msg->status_code() != 101) {
         coco_error("protocol not swich");
         return -2;
     }
@@ -148,40 +142,84 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
     std::string src_str = sec_websocket_key_ + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     sha1::calc(src_str.data(), src_str.size(), sha);
     if (base64::Encode((unsigned char *)sha, 20) !=
-        ws_http_msg_->get_request_header("Sec-WebSocket-Accept")) {
+        ws_http_msg->get_request_header("Sec-WebSocket-Accept")) {
         // close
         coco_error("Sec-WebSocket-Accept not equal");
         return -3;
     }
 
-    conn_ = new WebSocketConn(this, manager_, http_client_->GetUnderlayerConn(), ws_http_msg_);
-
+    stream_ = http_client_->GetUnderlayerConn();
+    conn_ = new WebSocketConn(this, manager_, stream_, ws_http_msg);
+    closed_ = false;
     if ((ret = conn_->Start()) != COCO_SUCCESS) {
+        closed_ = true;
         delete conn_;
+        conn_ = nullptr;
     }
     return ret;
 }
 
-void WebSocketClient::OnConnClosed(WebSocketConn *conn) {
-    if (conn_ == conn) {
-        conn_ = nullptr;
+void WebSocketClient::OnConnClosed() {
+    conn_ = nullptr;
+    closed_ = true;
+    CloseSocketIfIdle();
+}
+
+void WebSocketClient::CloseSocketIfIdle() {
+    if (conn_ != nullptr || writers_ > 0 || stream_ == nullptr) {
+        return;
     }
+    stream_ = nullptr;
+    http_client_->Disconnect();
 }
 
 int WebSocketClient::Stop() {
+    closed_ = true;
     if (conn_ != nullptr) {
         conn_->Stop();
     }
     return COCO_SUCCESS;
 }
 
-int WebSocketClient::HandleMessage(std::unique_ptr<WebSocektMessage> msg) {
+int WebSocketClient::HandleMessage(WebSocketConn *conn, std::unique_ptr<WebSocektMessage> msg) {
     if (message_handler_ != nullptr) {
-        return message_handler_(conn_, std::move(msg));
+        return message_handler_(conn, std::move(msg));
     }
     return COCO_SUCCESS;
 }
+
 int WebSocketClient::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_type) {
-    if (conn_ == nullptr) return -1;
-    return conn_->Send(buf, len, data_type);
+    return WriteFrame(buf, (size_t)len, data_type);
+}
+
+int WebSocketClient::WriteFrame(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
+    if (closed_) {
+        return ERROR_WS_CLOSED;
+    }
+
+    WebSocketHeader header;
+    header._opcode = data_type;
+    //客户端需要加密
+    header._mask_flag = true;
+    std::string frame = EncodeWebSocketFrame(header, buf, len);
+
+    int ret = ERROR_THREAD_INTERRUPED;
+    ++writers_;
+    if (st_mutex_lock(write_lock_) == 0) {
+        // The connection may have closed, or sent CLOSE, while this writer waited its turn.
+        ret = ERROR_WS_CLOSED;
+        if (!closed_) {
+            ret = stream_->Write((void *)frame.data(), frame.size(), nullptr);
+            if (data_type == WebSocketHeader::CLOSE) {
+                closed_ = true;
+            }
+        }
+        st_mutex_unlock(write_lock_);
+    }
+    --writers_;
+
+    if (closed_) {
+        CloseSocketIfIdle();
+    }
+    return ret;
 }

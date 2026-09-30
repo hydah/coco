@@ -1,5 +1,7 @@
 // WebSocket framing (RFC 6455) and the client's replies to control frames.
 
+#include <sys/socket.h>
+
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -317,7 +319,42 @@ COTEST(WsClientAnswersClose) {
     CHECK(closed);
 
     std::string msg = "late";
-    CHECK(ws->Send((uint8_t *)&msg[0], msg.size()) != COCO_SUCCESS);
+    CHECK_EQ(ws->Send((uint8_t *)&msg[0], msg.size()), ERROR_WS_CLOSED);
+    delete ws;
+    delete l;
+}
+
+// The peer half-closes and stops reading. The read coroutine sees EOF and exits while
+// the sender is parked on a full send buffer; the socket must stay open under the sender
+// until it times out, and later sends are refused.
+COTEST(WsClientSendBlockedWhenReadSideEnds) {
+    const int port = 19203;
+    TcpListener *l = ListenTcp(kLoopback, port);
+    CHECK(l != nullptr);
+    if (!l) {
+        return;
+    }
+
+    bool release = false;
+    st_thread_t server = cotest::Go([&]() {
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        if (!c) {
+            return;
+        }
+        shutdown(st_netfd_fileno(c->GetStfd()), SHUT_WR);
+        cotest::WaitUntil([&]() { return release; }, 5000);
+    });
+
+    WebSocketClient *ws = new WebSocketClient();
+    CHECK_EQ(ws->Start(false, kLoopback, port, "/", 300 * 1000), COCO_SUCCESS);
+    std::string big(32 * 1024 * 1024, 'x');
+    CHECK_EQ(ws->Send((uint8_t *)&big[0], big.size()), ERROR_SOCKET_TIMEOUT);
+    CHECK(ws->Closed());
+    std::string msg = "late";
+    CHECK_EQ(ws->Send((uint8_t *)&msg[0], msg.size()), ERROR_WS_CLOSED);
+
+    release = true;
+    st_thread_join(server, NULL);
     delete ws;
     delete l;
 }
