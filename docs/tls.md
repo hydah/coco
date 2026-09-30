@@ -2,7 +2,7 @@
 
 `SslConn` 把 OpenSSL 放在一条普通 TCP 连接上面。套接字由 State Threads 管理，OpenSSL 不直接读写文件描述符，只读写两块内存 BIO。协程在「把 TCP 上的字节喂进 `bio_in`」和「把 `bio_out` 里的字节写出 TCP」之间来回切换。TLS 1.2 和 TLS 1.3 共用这一个循环。
 
-代码在 `src/net/layer4/coco_ssl.hpp` 和 `src/net/layer4/coco_ssl.cpp`。HTTPS 的调用点在 `src/net/layer7/coco_http.cpp`：服务端 `HttpServerConn::DoCycle` 里调用 `SslServer::Handshake`，客户端 `HttpClient::Connect` 里调用 `SslClient::Handshake`。
+代码在 `src/net/tls/coco_ssl.hpp` 和 `src/net/tls/coco_ssl.cpp`。TLS 自成一层，夹在 `layer4` 和 `layer7` 之间：输入一条 `StreamConn`，输出一条 `StreamConn`。服务端的调用点在 `src/server/coco_tcp_server.cpp`：配置了证书的 `TcpServer` 在每条连接的协程上调用 `SslServer::Handshake`，之后才把连接交给处理函数，`HttpServer` 的 HTTPS 就是这样来的。客户端的调用点在 `src/net/layer7/http/coco_http.cpp` 的 `HttpClient::Connect`，调用 `SslClient::Handshake`。
 
 ## 为什么是内存 BIO
 
@@ -66,7 +66,7 @@ while (true) {
 
 1. **`r0 == 1`**：握手完成。完成的那一步仍可能往 `bio_out` 放了最后一包（TLS 1.3 服务端的 `Finished`，或随后的 `NewSessionTicket`），所以先 `FlushOutput` 再返回。
 2. **`SSL_ERROR_WANT_READ`**：状态机需要更多对端记录。`bio_out` 里可能已经有待发数据（对 `ClientHello` 的回应，或客户端的 `Finished`），先flush，再 `st_read`。
-3. **`st_read` 失败**：对端关闭、超时或网络错误，原样返回。超时要在握手前设置。`HttpClient::Connect` 在 `Handshake()` 之前调用 `SetRecvTimeout` / `SetSendTimeout`，服务端在 `DoCycle` 开头设置。设晚了，握手阶段的 `st_read` 会永久等待。
+3. **`st_read` 失败**：对端关闭、超时或网络错误，原样返回。超时要在握手前设置。`HttpClient::Connect` 在 `Handshake()` 之前调用 `SetRecvTimeout` / `SetSendTimeout`。服务端由 `TcpServer` 按 `TcpServerOptions` 设置，时机在包好 `SslServer` 之后、握手之前；`SslServer` 会在同一个 fd 上新建自己的 `CocoSocket`，在 `TcpConn` 上设的超时不会带过去。`HttpServer` 把接收超时设为 `HTTP_RECV_TIMEOUT_US`。设晚了，或者 `TcpServerOptions` 保持默认的不超时，握手阶段的 `st_read` 会一直等下去。
 4. **其他 `SSL_get_error`**：证书、私钥或协议错误，返回 `ERROR_HTTPS_HANDSHAKE`。
 
 `bio_in` 在整个握手期间不 `reset`。`BIO_write` 追加数据，OpenSSL 自己消费。一次 `st_read` 可能读到多条 TLS 记录，甚至读到握手后的应用数据；清掉 `bio_in` 会把还没解析的字节丢掉，随后 `SSL_read` 就看不到这半条请求。
@@ -146,17 +146,18 @@ if (WANT_READ) {
 一条 HTTPS 请求在服务端经过的对象：
 
 ```text
-HttpServer::Cycle
+TcpServer::Acceptor::Cycle
   Accept()                         ListenRoutine 协程，st_accept
-  new SslServer(stfd, tcp)
-  new HttpServerConn -> Start()    新的 ConnRoutine 协程
-      DoCycle
+  new Session -> Start()           新的 ConnRoutine 协程
+      Session::DoCycle
+        new SslServer(stfd, tcp)   接管 TcpConn 的 fd
         SetRecvTimeout
         SslServer::Handshake       DoHandshake 循环
-        HttpMessage::Parse(conn)   多次 SslConn::Read，得到明文 HTTP
-        mux 写响应                 SslConn::Write
+        handler = ServeHttpConn    TcpServer 的处理函数，只看到明文 StreamConn
+          HttpMessage::Parse(conn) 多次 SslConn::Read，得到明文 HTTP
+          mux 写响应               SslConn::Write
       Cycle 返回
-      delete HttpServerConn        仍在这条协程上，析构里关闭 st_netfd
+      delete Session               仍在这条协程上，析构里关闭 st_netfd
         ConnManager::Remove        从存活名单里移除
 ```
 

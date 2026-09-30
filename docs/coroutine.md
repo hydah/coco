@@ -9,8 +9,9 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 - `src/base/coroutine.hpp`、`src/base/coroutine.cpp`：`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
 - `src/base/coroutine_mgr.hpp`、`src/base/coroutine_mgr.cpp`：`ConnManager`
 - `src/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
+- `src/server/coco_tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
 - `thirdparty/st`：调度、事件系统和上下文切换
-- `tests/coroutine_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试
+- `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试
 
 ## 一个线程，多段栈
 
@@ -115,7 +116,7 @@ coroutine_fun(p):
 - `Shutdown`：先对名单里每个连接调用 `Stop()`，再 `st_cond_wait` 直到名单变空。
 - 析构函数：调用 `Shutdown()`，然后销毁条件变量。
 
-所以 `ConnManager` 必须比登记在它上面的连接活得久，而析构函数正好会等到它们都退出。`HttpServer` 的析构顺序因此是：先 `Stop()` 监听协程，再 `delete manager`（等所有连接退出，它们用到的 mux 此时还在），最后 `delete` 监听 socket。
+所以 `ConnManager` 必须比登记在它上面的连接活得久，而析构函数正好会等到它们都退出。`TcpServer` 的关停顺序因此是：先停监听协程，再 `manager_.Shutdown()`（等所有连接退出，它们用到的处理函数和 mux 此时还在），最后 `delete` 监听 socket。`HttpServer` 只是持有一个 `TcpServer`，顺序相同。
 
 `Shutdown` 的等待循环不会丢信号：
 
@@ -131,6 +132,8 @@ while (!名单为空)
 
 ## 和业务代码的边界
 
-业务侧继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`。`DoCycle()` 里的 `Read` / `Write` 可以按同步代码来写，该让出的时候 ST 会让出。收到中断后，`DoCycle()` 必须尽快返回：循环条件里加上 `ShouldTermCycle()`，I/O 出错时不要吞掉错误继续阻塞。`Shutdown` 和监听协程的 `Stop()` 都要等这一步完成才会返回。
+写服务端时，通常不需要继承任何类。`src/server/coco_tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 要等所有处理函数返回才会返回，所以不能在处理函数里调用它。
 
-继承 `ListenRoutine` 的类，要在自己的析构函数开头调用 `Stop()`。基类析构函数运行时，派生类的成员已经释放了，在那里停协程为时已晚。
+需要自己控制 accept 或连接对象时，再继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`，循环条件里加上 `ShouldTermCycle()`。`Shutdown` 和监听协程的 `Stop()` 同样要等 `DoCycle()` 返回。
+
+继承 `ListenRoutine` 的类，要在自己的析构函数开头调用 `Stop()`。基类析构函数运行时，派生类的成员已经释放了，在那里停协程为时已晚。`TcpServer` 内部的监听协程也是这样做的。

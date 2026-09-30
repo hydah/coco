@@ -117,8 +117,8 @@ _ST_SWITCH_CONTEXT(thread);          /* 再也不回来 */
 ```mermaid
 flowchart LR
     subgraph biz["业务类"]
-        hs["HttpServer : ListenRoutine"]
-        hc["HttpServerConn : ConnRoutine"]
+        hs["TcpServer::Acceptor : ListenRoutine"]
+        hc["TcpServer::Session : ConnRoutine"]
     end
     handler["CoroutineHandler<br/>Cycle() 纯虚<br/>ShouldTermCycle()"]
     co["CoCoroutine<br/>包一条 ST 线程<br/>start / stop / interrupt"]
@@ -153,12 +153,12 @@ handler 拥有 `CoCoroutine`，`CoCoroutine` 又指回 handler。删掉 handler�
 
 ## Cycle 是怎么被调用到的
 
-以一条 HTTP 连接为例：
+以 `HttpServer` 上的一条连接为例，`HttpServer` 就是处理函数为 `ServeHttpConn` 的 `TcpServer`：
 
 ```text
-HttpServer::Cycle()                 监听协程
-  new HttpServerConn(manager, ...)  构造：new CoCoroutine("conn", this)，set_detached(true)
-  conn->Start()
+TcpServer::Acceptor::Cycle()        监听协程
+  new Session(server, conn)         构造：new CoCoroutine("conn", this)，set_detached(true)
+  session->Start()
     CoCoroutine::start()
       st_thread_create(coroutine_fun, this, joinable=0, 0)   只放进运行队列
     manager_->Push(this)            登记到存活名单
@@ -166,10 +166,12 @@ HttpServer::Cycle()                 监听协程
                                     …… 调度器切到新协程 ……
 _st_thread_main()                   ST 的入口
   coroutine_fun(CoCoroutine *)      静态函数，arg 就是 CoCoroutine *
+    st_thread_setspecific           记下当前协程，供 CocoShouldStop() 查询
     CoCoroutine::cycle()
       生成协程 ID（CoroutineContext）
       handler->Cycle()              虚函数 → ConnRoutine::Cycle
-        DoCycle()                   虚函数 → HttpServerConn::DoCycle，真正的业务
+        DoCycle()                   虚函数 → Session::DoCycle：可选 TLS 握手，然后调用处理函数
+          ServeHttpConn(conn, mux)  真正的业务
         按返回值打日志，return
     记录错误码，cycle_done = true
     if (detached_) delete handler   连接在这里释放自己
@@ -177,16 +179,25 @@ _st_thread_main()                   ST 的入口
 st_thread_exit()                    交回栈，切走
 ```
 
-`coroutine_fun` 必须是静态函数，因为 ST 只接受 C 风格的 `void *(*)(void *)`。它把 `void *` 转回 `CoCoroutine *`，再经 handler 的虚函数分派到业务代码。这里是两层模板方法：`ConnRoutine::Cycle()` 做通用的日志和错误归一，`DoCycle()` 留给派生类。
+`coroutine_fun` 必须是静态函数，因为 ST 只接受 C 风格的 `void *(*)(void *)`。它把 `void *` 转回 `CoCoroutine *`，再经 handler 的虚函数分派到业务代码。这里是两层模板方法：`ConnRoutine::Cycle()` 做通用的日志和错误归一，`DoCycle()` 留给派生类。`TcpServer::Session` 把 `DoCycle()` 再转成一次 `std::function` 调用，所以业务代码不用继承。
+
+处理函数不是 `CoroutineHandler`，拿不到 `ShouldTermCycle()`。`coroutine_fun` 因此把当前的 `CoCoroutine *` 存进 ST 的线程私有数据（`CocoInit()` 里 `st_key_create` 创建的键），`CocoShouldStop()` 取出它，读的是同一个 `trd_err_`。
 
 ```cpp
 void *CoCoroutine::coroutine_fun(void *arg) {
     CoCoroutine *p = (CoCoroutine *)arg;
 
+    if (_coroutine_key >= 0) {
+        st_thread_setspecific(_coroutine_key, p);
+    }
+
     int err = p->cycle();
 
     if (_st_context) {
         _st_context->clear_cid();
+    }
+    if (_coroutine_key >= 0) {
+        st_thread_setspecific(_coroutine_key, NULL);
     }
 
     if (err != COCO_SUCCESS) {
@@ -213,7 +224,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 `delete handler` 触发的析构顺序：
 
 ```text
-~HttpServerConn()     释放 conn_ → Layer4Conn 析构 → st_netfd_close
+~Session()           释放 conn_ → Layer4Conn 析构 → st_netfd_close
                       DoCycle 已经返回，fd 上没有协程在等，close 一定成功
 ~ConnRoutine()
   delete coroutine    ~CoCoroutine → stop()：trd_ 就是当前线程，只 interrupt（cycle_done 为真，无操作），不 join
@@ -265,15 +276,15 @@ void CoCoroutine::stop() {
 - 在 `Cycle()` 里对自己调用：ST 不允许 join 自己，只中断。这时不设置 `disposed`，之后调用方 `delete` 时仍然会 join 一次。
 - 从未启动：`trd_` 为空，不等待。
 
-派生类必须在自己的析构函数开头调用 `Stop()`，因为 C++ 先执行派生类的析构函数。等到基类析构函数运行时，`Cycle()` 用到的成员已经没了。`~HttpServer` 的顺序是：先 `Stop()`，保证监听协程已经不在 `Accept` 里；再 `delete manager`，等所有连接退出；最后 `delete` 监听 socket。
+派生类必须在自己的析构函数开头调用 `Stop()`，因为 C++ 先执行派生类的析构函数。等到基类析构函数运行时，`Cycle()` 用到的成员已经没了。`TcpServer::Acceptor` 就是这样做的。`~TcpServer` 的顺序是：先停监听协程，保证它已经不在 `Accept` 里、不会再启动新连接；再 `manager_.Shutdown()`，等所有连接退出；最后 `delete` 监听 socket。
 
 ## 为什么需要 ConnManager
 
 连接能释放自己以后，manager 已经不负责释放任何东西，但有两件事只能由它来做。
 
-第一，找到所有连接。监听循环里 `new HttpServerConn(...)` 之后调用 `Start()`，指针就丢掉了。关停时如果没有名单，没有任何地方知道还有哪些连接活着，也就无法中断它们。
+第一，找到所有连接。监听循环里 `new Session(...)` 之后调用 `Start()`，指针就丢掉了。关停时如果没有名单，没有任何地方知道还有哪些连接活着，也就无法中断它们。
 
-第二，作为关停屏障，等所有连接退出。连接运行时会引用别人拥有的对象：`HttpServerConn` 用着 `HttpServer` 的 mux，每个连接析构时还要调用 `manager_->Remove`。如果 `HttpServer` 析构时只中断连接就返回，这些连接醒来时，mux 和 manager 都已经释放了。`Shutdown()` 保证这些对象在所有连接析构完之后才释放：
+第二，作为关停屏障，等所有连接退出。连接运行时会引用别人拥有的对象：`Session` 调用的是 `TcpServer` 的处理函数，处理函数里又用着 `HttpServer` 交进来的 mux，每个连接析构时还要调用 `manager_->Remove`。如果 `TcpServer` 析构时只中断连接就返回，这些连接醒来时，处理函数、mux 和 manager 都已经释放了。`Shutdown()` 保证这些对象在所有连接析构完之后才释放：
 
 ```cpp
 void ConnManager::Shutdown() {
@@ -299,32 +310,32 @@ void ConnManager::Shutdown() {
 
 它也不怕被中断。调用 `Shutdown()` 的协程如果自己被中断，`st_cond_wait` 会提前返回，`while` 再检查一次名单，继续等。
 
-删除一个还有连接的 `HttpServer`，完整的时序是：
+删除一个还有连接的 `HttpServer`（也就是删除它持有的 `TcpServer`），完整的时序是：
 
 ```mermaid
 sequenceDiagram
-    participant M as 主协程 delete HttpServer
+    participant M as 主协程 delete TcpServer
     participant L as 监听协程
     participant C as 连接协程（阻塞在 Parse 里）
-    M->>L: Stop()：interrupt 并 join
+    M->>L: Acceptor::Stop()：interrupt 并 join
     L-->>L: Accept 返回 NULL，ShouldTermCycle 为真，Cycle 返回
     L-->>M: join 返回
-    M->>M: delete manager → Shutdown()
+    M->>M: manager_.Shutdown()
     M->>C: Stop()：interrupt
     M->>M: st_cond_wait（让出）
-    C-->>C: Read 返回 EINTR，DoCycle 返回
+    C-->>C: Read 返回 EINTR，ServeHttpConn 返回，DoCycle 返回
     C-->>C: delete this：关闭 socket，Remove，名单为空，broadcast
     C-->>M: 唤醒
-    M->>M: 名单为空，销毁 cond，delete 监听 socket
+    M->>M: 名单为空，delete 监听 socket
 ```
 
 以前的 manager 是连接真正的所有者：它要跑一条清理协程专门负责 `delete`，还要处理僵尸名单、丢信号，以及两处 `Destroy()` 同时进入的问题。现在它只剩一份存活名单加一个关停屏障。
 
 ## 约束
 
-- `DoCycle()` 必须响应中断。中断标志只生效一次，`CoCoroutine::interrupted` 也只允许中断一次。拿到 `EINTR` 以后如果忽略它再去读，就会一直阻塞，`Shutdown()` 也会跟着一直等。循环条件里加上 `ShouldTermCycle()`，出错就返回。
+- `DoCycle()` 和 `TcpServer` 的处理函数都必须响应中断。中断标志只生效一次，`CoCoroutine::interrupted` 也只允许中断一次。拿到 `EINTR` 以后如果忽略它再去读，就会一直阻塞，`Shutdown()` 也会跟着一直等。循环条件里加上 `ShouldTermCycle()`（处理函数里用 `CocoShouldStop()`），出错就返回。
 - 不能在某条连接里调用管理它的那个 manager 的 `Shutdown()`，也不能在连接里 `delete` 这个 manager：它会等所有连接退出，其中包括它自己。
-- `CoroutineContext` 用全局的 `std::map<st_thread_t, int>` 存协程 ID，每次查询都查一次 map。ST 自带的 `st_key_create` / `st_thread_setspecific` 更合适，目前还没有换。
+- `CoroutineContext` 用全局的 `std::map<st_thread_t, int>` 存协程 ID，每次查询都查一次 map。`CocoShouldStop()` 已经改用 ST 自带的 `st_key_create` / `st_thread_setspecific`，协程 ID 还没有换过去。
 - 一个进程只有一份 ST，跑在调用 `CocoInit()` 的那条内核线程上。要用满多核需要多进程，或者每个线程各自 `st_init()` 一份；所有对象都不能跨线程使用。
 
-对应的测试在 `tests/coroutine_test.cpp` 和 `tests/lifecycle_test.cpp`，跑法见 [构建](build.md) 的“测试”一节。
+对应的测试在 `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp` 和 `tests/lifecycle_test.cpp`，跑法见 [构建](build.md) 的“测试”一节。

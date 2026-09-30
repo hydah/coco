@@ -59,10 +59,12 @@ cmake --build build -j
 
 | 路径 | 内容 |
 | --- | --- |
-| `lib/libcoco.a` | coco |
+| `lib/libcoco_core.a`、`libcoco_l4.a`、`libcoco_tls.a`、`libcoco_l7.a`、`libcoco_server.a` | coco，每层一个库，见 [架构](architecture.md) 的“分层” |
 | `lib/libst.a` | State Threads |
 | `thirdparty/temp/out_libs/openssl-<version>/lib/` | `libssl.a`、`libcrypto.a` |
 | `build/bin/` | 示例程序、`coco_tests` |
+
+在 CMake 里链接 `coco` 目标就能拿到全部层，以及 `st`、`ssl`、`crypto`。只用某一层时可以只链接那一层，例如 `coco_l4`。仓库外面用 `dist/lib` 里的静态库时，要按从上到下的顺序全部列出：`-lcoco_server -lcoco_l7 -lcoco_tls -lcoco_l4 -lcoco_core -lst -lssl -lcrypto`。
 
 OpenSSL 版本写在 `cmake/openssl.cmake`（当前 3.5.9）。第一次配置会从 GitHub 下载源码包并校验 SHA256，只编译库，不编译 OpenSSL 自带的测试和文档。离线构建时把对应的 `openssl-<version>.tar.gz` 放到 `thirdparty/`，CMake 会用本地文件，不再下载。`thirdparty/temp/` 和 `thirdparty/openssl-*.tar.gz` 都不进版本库。
 
@@ -70,7 +72,9 @@ Linux 上事件系统是 epoll，OpenSSL 用上游的 `./config` 探测本机。
 
 ## 测试
 
-测试在 `tests/`，不依赖外部测试框架。ctest 把每个用例注册成单独的进程，超时 10 秒，所以一个用例崩溃或卡住只会算在它自己头上。用例会在 `127.0.0.1` 上监听 19181–19184 端口。
+测试在 `tests/`，不依赖外部测试框架。ctest 把每个用例注册成单独的进程，超时 10 秒，所以一个用例崩溃或卡住只会算在它自己头上。用例会在 `127.0.0.1` 上监听 19181–19198 端口。
+
+`LayerDependencies` 不是 C++ 用例，它用 `cmake -P` 运行 `cmake/check_layers.cmake`，检查 `src/` 下没有向上层的 include。也可以单独跑：`cmake -DSRC_DIR=src -P cmake/check_layers.cmake`。
 
 ```bash
 ./build.sh -t                               # Release 构建并跑测试
