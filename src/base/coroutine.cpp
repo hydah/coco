@@ -6,7 +6,7 @@
 #include "coco_api.h"
 #include "log/log.hpp"
 
-int CoroutineHandler::GetCoroutineState() { return coroutine->pull(); };
+int CoroutineHandler::GetCoroutineState() { return coroutine->pull(); }
 
 // ST thread-specific slot holding the CoCoroutine running on the current thread.
 static int _coroutine_key = -1;
@@ -23,58 +23,20 @@ int CoroutineContext::generate_id() {
 int CoroutineContext::get_id() { return cache_[st_thread_self()]; }
 
 int CoroutineContext::set_id(int v) {
-    st_thread_t self = st_thread_self();
-
-    int ov = 0;
-    if (cache_.find(self) != cache_.end()) {
-        ov = cache_[self];
-    }
-
-    cache_[self] = v;
-
+    int &slot = cache_[st_thread_self()];
+    int ov = slot;
+    slot = v;
     return ov;
 }
 
-void CoroutineContext::clear_cid() {
-    st_thread_t self = st_thread_self();
-    std::map<st_thread_t, int>::iterator it = cache_.find(self);
-    if (it != cache_.end()) {
-        cache_.erase(it);
-    }
-}
+void CoroutineContext::clear_cid() { cache_.erase(st_thread_self()); }
 
 // coroutine
-CoCoroutine::CoCoroutine(std::string n, CoroutineHandler *h) {
-    // TODO: FIXME: Reduce duplicated code.
-    name = n;
-    handler = h;
-    trd_ = NULL;
-    // trd_err = srs_success;
-    started = interrupted = disposed = cycle_done = false;
-
-    //  0 use default, default is 64K.
-    stack_size = 0;
-}
-
-CoCoroutine::CoCoroutine(std::string n, CoroutineHandler *h, int32_t cid) {
-    name = n;
-    handler = h;
-    cid_ = cid;
-    trd_ = NULL;
-    // trd_err = srs_success;
-    started = interrupted = disposed = cycle_done = false;
-
-    //  0 use default, default is 64K.
-    stack_size = 0;
-}
-
 CoCoroutine::~CoCoroutine() {
     // A detached coroutine is only freed by itself, after its cycle has returned.
     assert(!detached_ || !running());
     stop();
 }
-
-void CoCoroutine::set_stack_size(int v) { stack_size = v; }
 
 int32_t CoCoroutine::start() {
     int ret = COCO_SUCCESS;
@@ -94,7 +56,7 @@ int32_t CoCoroutine::start() {
         return ERROR_THREAD_DISPOSED;
     }
 
-    if ((trd_ = st_thread_create(coroutine_fun, this, detached_ ? 0 : 1, stack_size)) == NULL) {
+    if ((trd_ = st_thread_create(coroutine_fun, this, detached_ ? 0 : 1, stack_size)) == nullptr) {
         ret = ERROR_ST_CREATE_CYCLE_THREAD;
         coco_error("StCoroutine st_coroutine_create failed. ret=%d", ret);
         return ret;
@@ -119,11 +81,11 @@ void CoCoroutine::stop() {
 
     interrupt();
 
-    // When not started, the trd is NULL.
+    // When not started, the trd is null.
     if (trd_ && !detached_) {
         // The join fails with EINTR if the caller itself is interrupted while waiting;
         // returning early would free this object under a still running coroutine.
-        while (st_thread_join((st_thread_t)trd_, NULL) != 0) {
+        while (st_thread_join(trd_, nullptr) != 0) {
             if (errno != EINTR) {
                 coco_error("join coroutine %s failed. errno=%d", name.c_str(), errno);
                 break;
@@ -149,30 +111,21 @@ void CoCoroutine::interrupt() {
 
     // Note that if another thread is stopping thread and waiting in
     // st_thread_join, the interrupt will make the st_thread_join fail.
-    st_thread_interrupt((st_thread_t)trd_);
+    st_thread_interrupt(trd_);
 }
 
-int32_t CoCoroutine::get_cid() { return cid_; }
-
 int CoCoroutine::cycle() {
-    int ret = COCO_SUCCESS;
-
     if (_st_context) {
         cid_ = _st_context->generate_id();
         _st_context->set_id(cid_);
         coco_trace("coroutine %s cycle start", name.c_str());
     }
 
-    int err = handler->Cycle();
-    if (err != COCO_SUCCESS) {
-        return err;
-    }
-
-    return ret;
+    return handler->Cycle();
 }
 
 void *CoCoroutine::coroutine_fun(void *arg) {
-    CoCoroutine *p = (CoCoroutine *)arg;
+    auto p = static_cast<CoCoroutine *>(arg);
 
     if (_coroutine_key >= 0) {
         st_thread_setspecific(_coroutine_key, p);
@@ -184,7 +137,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
         _st_context->clear_cid();
     }
     if (_coroutine_key >= 0) {
-        st_thread_setspecific(_coroutine_key, NULL);
+        st_thread_setspecific(_coroutine_key, nullptr);
     }
 
     if (err != COCO_SUCCESS) {
@@ -199,10 +152,8 @@ void *CoCoroutine::coroutine_fun(void *arg) {
         delete p->handler;
     }
 
-    return NULL;
+    return nullptr;
 }
-
-#define SERVER_LISTEN_BACKLOG 512
 
 ListenRoutine::ListenRoutine() { coroutine = new CoCoroutine("listen", this); }
 
@@ -353,6 +304,6 @@ bool CocoShouldStop() {
     if (_coroutine_key < 0) {
         return false;
     }
-    CoCoroutine *c = (CoCoroutine *)st_thread_getspecific(_coroutine_key);
-    return c != NULL && c->pull() != COCO_SUCCESS;
+    auto c = static_cast<CoCoroutine *>(st_thread_getspecific(_coroutine_key));
+    return c != nullptr && c->pull() != COCO_SUCCESS;
 }

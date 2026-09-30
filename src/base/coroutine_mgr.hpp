@@ -16,6 +16,9 @@ class ConnManager {
     // Shuts down the remaining connections first.
     virtual ~ConnManager();
 
+    ConnManager(const ConnManager &) = delete;
+    ConnManager &operator=(const ConnManager &) = delete;
+
     virtual void Push(ConnRoutine *conn);
     virtual void Remove(ConnRoutine *conn);
     // Interrupts every connection and waits until all of them have exited. Must not be
@@ -25,5 +28,6 @@ class ConnManager {
 
  private:
     std::unordered_set<ConnRoutine *> conns;
+    // Created by the first Shutdown() that has to wait; signalled when conns drains.
     st_cond_t cond_ = nullptr;
 };

@@ -20,7 +20,7 @@ void ConnManager::Remove(ConnRoutine *conn) {
     if (conns.erase(conn) == 0) {
         return;
     }
-    coco_info("conn removed. conns=%d", (int)conns.size());
+    coco_info("conn removed. conns=%d", static_cast<int>(conns.size()));
 
     if (conns.empty() && cond_) {
         st_cond_broadcast(cond_);
