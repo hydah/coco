@@ -108,7 +108,7 @@ server.ListenAndServe("127.0.0.1", 8080);
 - **TCP / UDP**：`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp`。
 - **TLS**：服务端和客户端都有。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
 - **HTTP/1.1**：`ServeHttpConn` 按 `HttpServeMux` 派发，支持 keep-alive 和 chunked。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` 返回时已经开始服务；HTTPS 由 `TcpServer` 在调用 `ServeHttpConn` 之前完成握手。`HttpClient` 能发 GET/POST，HTTPS 时先做 `SslClient` 握手。
-- **WebSocket**：客户端在 `src/net/layer7/ws/coco_ws.cpp`，握手用 HTTP 升级。帧的解析和分片重组在 `ws_frame.cpp`。
+- **WebSocket**：客户端在 `src/net/layer7/ws/coco_ws.cpp`，握手用 HTTP 升级。收到 PING 回 PONG，收到 CLOSE 回一个带相同状态码的 CLOSE 后断开；发送的每一帧用随机掩码，整帧一次写出，并用锁串行化，所以其他协程调用 `Send` 时不会和 PONG 交错。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
 
 库里没有连接池，也没有 HTTP/2。一条连接对应一个 `ConnRoutine`，用完即回收。
 
@@ -123,9 +123,10 @@ server.ListenAndServe("127.0.0.1", 8080);
 | 1070 附近 | 协程停止 | `ERROR_THREAD_INTERRUPED` 1070 |
 | 3007–3011 | HTTP 解析和路由 | `ERROR_HTTP_PARSE_HEADER` 3009 |
 | 4041–4045 | TLS | `ERROR_HTTPS_HANDSHAKE` 4042 |
+| 4051–4053 | WebSocket | `ERROR_WS_PROTOCOL` 4051，`ERROR_WS_MESSAGE_TOO_LARGE` 4052 |
 
 文件里还有一批从 SRS 留下的系统错误码（pid 文件、带宽限制等），当前网络路径不会返回它们。
 
 ## 示例与测试
 
-`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`LayerDependencies` 检查分层。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端）用来手动验证。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）以及客户端对 PING / CLOSE 的回复；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`LayerDependencies` 检查分层。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端）用来手动验证。

@@ -1,6 +1,8 @@
 #include "net/layer7/ws/ws_frame.hpp"
 
-#include <arpa/inet.h>
+#include <random>
+
+#include "common/error.hpp"
 
 /*
   0             1                 2               3
@@ -23,153 +25,171 @@
  +---------------------------------------------------------------+
  */
 
-#define CHECK_LEN(size)                                     \
-    do {                                                    \
-        if (len - (ptr - data) < size) {                    \
-            if (cur_msg_->cache_.empty()) {                 \
-                cur_msg_->cache_.assign((char *)data, len); \
-            }                                               \
-            return;                                         \
-        }                                                   \
-    } while (0)
+// RFC 6455 5.5: control frames carry at most 125 bytes and are never fragmented.
+static const size_t kMaxControlPayload = 125;
 
-void WebSocketFrameDecoder::Continue(std::unique_ptr<WebSocektMessage> msg, bool mask_flag) {
-    cur_msg_ = std::move(msg);
-    cur_msg_->header_.Reset();
-    cur_msg_->cache_.clear();
-    cur_msg_->got_header_ = false;
-    cur_msg_->header_._mask_flag = mask_flag;
-}
+static bool IsControl(int opcode) { return (opcode & 0x08) != 0; }
 
-void WebSocketFrameDecoder::Decode(uint8_t *data, size_t len) {
-    if (cur_msg_ == nullptr) {
-        cur_msg_.reset(new WebSocektMessage());
-    }
-
-    uint8_t *ptr = data;
-    if (!cur_msg_->got_header_) {
-        //还没有获取数据头
-        if (!cur_msg_->cache_.empty()) {
-            cur_msg_->cache_.append((char *)data, len);
-            data = ptr = (uint8_t *)cur_msg_->cache_.data();
-            len = cur_msg_->cache_.size();
-        }
-
-        CHECK_LEN(1);
-        cur_msg_->header_._fin = (*ptr & 0x80) >> 7;
-        cur_msg_->header_._reserved = (*ptr & 0x70) >> 4;
-        cur_msg_->header_._opcode = (WebSocketHeader::Type)(*ptr & 0x0F);
-        if (!cur_msg_->is_fragmented) {
-            cur_msg_->_opcode = cur_msg_->header_._opcode;
-            if (cur_msg_->_opcode == WebSocketHeader::CONTINUATION) {
-                // error
-            }
-        }
-        ptr += 1;
-
-        CHECK_LEN(1);
-        cur_msg_->header_._mask_flag = (*ptr & 0x80) >> 7;
-        cur_msg_->header_._payload_len = (*ptr & 0x7F);
-        ptr += 1;
-
-        if (cur_msg_->header_._payload_len == 126) {
-            CHECK_LEN(2);
-            cur_msg_->header_._payload_len = (*ptr << 8) | *(ptr + 1);
-            ptr += 2;
-        } else if (cur_msg_->header_._payload_len == 127) {
-            CHECK_LEN(8);
-            cur_msg_->header_._payload_len =
-                ((uint64_t)ptr[0] << (8 * 7)) | ((uint64_t)ptr[1] << (8 * 6)) |
-                ((uint64_t)ptr[2] << (8 * 5)) | ((uint64_t)ptr[3] << (8 * 4)) |
-                ((uint64_t)ptr[4] << (8 * 3)) | ((uint64_t)ptr[5] << (8 * 2)) |
-                ((uint64_t)ptr[6] << (8 * 1)) | ((uint64_t)ptr[7] << (8 * 0));
-            ptr += 8;
-        }
-        if (cur_msg_->header_._mask_flag) {
-            CHECK_LEN(4);
-            cur_msg_->header_._mask.assign(ptr, ptr + 4);
-            ptr += 4;
-        }
-        // 读取到协议头
-        cur_msg_->got_header_ = true;
-
-        _mask_offset = 0;
-    }
-
-    //进入后面逻辑代表已经获取到了webSocket协议头，
-    auto remain = len - (ptr - data);
-    if (cur_msg_->header_._payload_len != 0) {
-        if (remain > 0) {
-            auto copy_len = remain;
-            if (remain + cur_msg_->header_.payload_offset_ > cur_msg_->header_._payload_len) {
-                copy_len = cur_msg_->header_._payload_len - cur_msg_->data_.size();
-            }
-            cur_msg_->header_.payload_offset_ += copy_len;
-
-            remain -= copy_len;
-
-            // mask
-            if (cur_msg_->header_._mask_flag) {
-                for (size_t i = 0; i < copy_len; ++i) {
-                    *(ptr + i) ^= cur_msg_->header_._mask[(i + _mask_offset) % 4];
-                }
-                _mask_offset = (_mask_offset + copy_len) % 4;
-            }
-
-            cur_msg_->data_.append((char *)ptr, copy_len);
-        }
-    }
-
-    // get whole payload
-    if (cur_msg_->header_.payload_offset_ == cur_msg_->header_._payload_len) {
-        on_frame_(std::move(cur_msg_));
-
-        if (remain > 0 && remain <= len) {
-            //解析下一个包
-            Decode(data + (len - remain), remain);
-        }
+WebSocketHeader::WebSocketHeader() : _mask(4) {
+    // The key must be unpredictable to intermediaries, so it comes from the OS entropy.
+    static std::random_device rd;
+    uint32_t key = rd();
+    for (int i = 0; i < 4; ++i) {
+        _mask[i] = (uint8_t)(key >> (8 * i));
     }
 }
 
-std::string EncodeWebSocketFrameHeader(WebSocketHeader &header, uint8_t *buffer, uint32_t size) {
-    std::string ret;
-    uint64_t len = size;
-    uint8_t byte = header._fin << 7 | ((header._reserved & 0x07) << 4) | (header._opcode & 0x0F);
-    ret.push_back(byte);
+int WebSocketFrameDecoder::Decode(const uint8_t *data, size_t len) {
+    if (err_ != 0) {
+        return err_;
+    }
+    pending_.append((const char *)data, len);
 
-    auto mask_flag = (header._mask_flag && header._mask.size() >= 4);
-    byte = mask_flag << 7;
+    size_t pos = 0;
+    while (true) {
+        const uint8_t *p = (const uint8_t *)pending_.data() + pos;
+        size_t avail = pending_.size() - pos;
 
-    if (len < 126) {
-        byte |= len;
-        ret.push_back(byte);
-    } else if (len <= 0xFFFF) {
-        byte |= 126;
-        ret.push_back(byte);
+        if (avail < 2) {
+            break;
+        }
+        bool fin = (p[0] & 0x80) != 0;
+        uint8_t reserved = (p[0] >> 4) & 0x07;
+        int opcode = p[0] & 0x0F;
+        bool masked = (p[1] & 0x80) != 0;
+        uint64_t size = p[1] & 0x7F;
+        size_t header_len = 2;
 
-        uint16_t len_low = htons((uint16_t)len);
-        ret.append((char *)&len_low, 2);
+        if (size == 126) {
+            if (avail < 4) {
+                break;
+            }
+            size = ((uint64_t)p[2] << 8) | p[3];
+            header_len = 4;
+        } else if (size == 127) {
+            if (avail < 10) {
+                break;
+            }
+            size = 0;
+            for (int i = 0; i < 8; ++i) {
+                size = (size << 8) | p[2 + i];
+            }
+            header_len = 10;
+        }
+        if (masked) {
+            header_len += 4;
+        }
+
+        // Reject before buffering the payload, so a bogus length cannot grow pending_.
+        // No extension is negotiated, so the RSV bits must be zero.
+        bool known = opcode <= WebSocketHeader::BINARY || (opcode >= WebSocketHeader::CLOSE &&
+                                                           opcode <= WebSocketHeader::PONG);
+        if (reserved != 0 || !known) {
+            err_ = ERROR_WS_PROTOCOL;
+            return err_;
+        }
+        if (IsControl(opcode) && (!fin || size > kMaxControlPayload)) {
+            err_ = ERROR_WS_PROTOCOL;
+            return err_;
+        }
+        if (size > MAX_WS_PACKET) {
+            err_ = ERROR_WS_MESSAGE_TOO_LARGE;
+            return err_;
+        }
+
+        if (avail < header_len + size) {
+            break;
+        }
+        const uint8_t *mask = masked ? p + header_len - 4 : nullptr;
+        int ret = OnFrame(fin, (WebSocketHeader::Type)opcode, p + header_len, (size_t)size, mask);
+        if (ret != 0) {
+            err_ = ret;
+            return err_;
+        }
+        pos += header_len + size;
+    }
+
+    pending_.erase(0, pos);
+    return 0;
+}
+
+int WebSocketFrameDecoder::OnFrame(bool fin, WebSocketHeader::Type opcode,
+                                   const uint8_t *payload, size_t size, const uint8_t *mask) {
+    std::unique_ptr<WebSocektMessage> control;
+    WebSocektMessage *msg = nullptr;
+
+    if (IsControl(opcode)) {
+        control.reset(new WebSocektMessage());
+        control->_opcode = opcode;
+        msg = control.get();
+    } else if (opcode == WebSocketHeader::CONTINUATION) {
+        if (!partial_) {
+            return ERROR_WS_PROTOCOL;
+        }
+        if (partial_->data_.size() + size > MAX_WS_PACKET) {
+            return ERROR_WS_MESSAGE_TOO_LARGE;
+        }
+        msg = partial_.get();
     } else {
-        byte |= 127;
-        ret.push_back(byte);
+        // A new data message must not start before the previous one is finished.
+        if (partial_) {
+            return ERROR_WS_PROTOCOL;
+        }
+        partial_.reset(new WebSocektMessage());
+        partial_->_opcode = opcode;
+        msg = partial_.get();
+    }
 
-        uint32_t len_high = htonl(len >> 32);
-        uint32_t len_low = htonl(len & 0xFFFFFFFF);
-        ret.append((char *)&len_high, 4);
-        ret.append((char *)&len_low, 4);
+    size_t offset = msg->data_.size();
+    msg->data_.append((const char *)payload, size);
+    if (mask) {
+        for (size_t i = 0; i < size; ++i) {
+            msg->data_[offset + i] ^= mask[i % 4];
+        }
+    }
+
+    if (control) {
+        return on_message_(std::move(control));
+    }
+    if (fin) {
+        return on_message_(std::move(partial_));
+    }
+    return 0;
+}
+
+std::string EncodeWebSocketFrame(const WebSocketHeader &header, const uint8_t *payload,
+                                 size_t size) {
+    std::string frame;
+    uint64_t len = size;
+    bool mask_flag = header._mask_flag && header._mask.size() >= 4;
+
+    frame.push_back((char)(header._fin << 7 | ((header._reserved & 0x07) << 4) |
+                           (header._opcode & 0x0F)));
+    uint8_t byte = mask_flag ? 0x80 : 0;
+    if (len < 126) {
+        frame.push_back((char)(byte | len));
+    } else if (len <= 0xFFFF) {
+        frame.push_back((char)(byte | 126));
+        frame.push_back((char)(len >> 8));
+        frame.push_back((char)len);
+    } else {
+        frame.push_back((char)(byte | 127));
+        for (int i = 7; i >= 0; --i) {
+            frame.push_back((char)(len >> (8 * i)));
+        }
+    }
+
+    size_t payload_at = frame.size() + (mask_flag ? 4 : 0);
+    if (mask_flag) {
+        frame.append((const char *)header._mask.data(), 4);
+    }
+    if (size > 0) {
+        frame.append((const char *)payload, size);
     }
     if (mask_flag) {
-        ret.append((char *)header._mask.data(), 4);
-    }
-
-    if (len > 0) {
-        if (mask_flag) {
-            uint8_t *ptr = buffer;
-            for (size_t i = 0; i < len; ++i, ++ptr) {
-                *(ptr) ^= header._mask[i % 4];
-            }
+        for (size_t i = 0; i < size; ++i) {
+            frame[payload_at + i] ^= header._mask[i % 4];
         }
     }
-
-    return ret;
+    return frame;
 }

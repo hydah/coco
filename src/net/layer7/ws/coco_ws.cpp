@@ -4,10 +4,13 @@
 
 WebSocketConn::WebSocketConn(void *observer, ConnManager *mgr, StreamConn *conn, HttpMessage *r)
     : ConnRoutine(mgr),
-      decoder_([this](std::unique_ptr<WebSocektMessage> msg) { ProcessMessage(std::move(msg)); }) {
+      decoder_([this](std::unique_ptr<WebSocektMessage> msg) {
+          return ProcessMessage(std::move(msg));
+      }) {
     conn_ = conn;
     http_msg_ = r;
     observer_ = observer;
+    write_lock_ = st_mutex_new();
 }
 
 WebSocketConn::~WebSocketConn() {
@@ -17,74 +20,50 @@ WebSocketConn::~WebSocketConn() {
     }
     coco_freep(conn_);
     coco_freep(http_msg_);
-}
-
-/**
- * 接收到完整的一个webSocket数据包后回调
- * @param header 数据包包头
- */
-void WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
-    if (msg == nullptr) return;
-
-    WebSocketClient *ws_client = (WebSocketClient *)observer_;
-
-    auto flag = msg->header_._mask_flag;
-    // websocket客户端发送数据需要加密
-    msg->header_._mask_flag = true;
-
-    switch (msg->_opcode) {
-        case WebSocketHeader::CLOSE: {
-            //服务器主动关闭
-            EncodeWebSocketFrameHeader(msg->header_, nullptr, 0);
-            // shutdown(SockException(Err_eof, "websocket server close the connection"));
-            break;
-        }
-
-        case WebSocketHeader::PING: {
-            //心跳包
-            msg->header_._opcode = WebSocketHeader::PONG;
-            EncodeWebSocketFrameHeader(msg->header_, (uint8_t *)msg->data_.data(),
-                                       msg->data_.size());
-            break;
-        }
-
-        case WebSocketHeader::CONTINUATION:
-        case WebSocketHeader::TEXT:
-        case WebSocketHeader::BINARY: {
-            if (!msg->header_._fin) {
-                //还有后续分片数据, 我们先缓存数据，所有分片收集完成才一次性输出
-                if (msg->data_.size() < MAX_WS_PACKET) {
-                    //还有内存容量缓存分片数据
-                    decoder_.Continue(std::move(msg), flag);
-                    break;
-                }
-                //分片缓存太大，需要清空
-            }
-
-            // get message
-            ws_client->HandleMessage(std::move(msg));
-            break;
-        }
-
-        default:
-            break;
+    if (write_lock_) {
+        st_mutex_destroy(write_lock_);
+        write_lock_ = nullptr;
     }
 }
 
-int WebSocketConn::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_type) {
+int WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
+    switch (msg->_opcode) {
+        case WebSocketHeader::CLOSE: {
+            // RFC 6455 5.5.1: answer with a close frame echoing the status code, then stop.
+            size_t code_len = msg->data_.size() >= 2 ? 2 : 0;
+            Send((const uint8_t *)msg->data_.data(), code_len, WebSocketHeader::CLOSE);
+            return ERROR_WS_CLOSED;
+        }
+
+        case WebSocketHeader::PING:
+            //心跳包
+            return Send((const uint8_t *)msg->data_.data(), msg->data_.size(),
+                        WebSocketHeader::PONG);
+
+        case WebSocketHeader::PONG:
+            return COCO_SUCCESS;
+
+        default:
+            if (observer_) {
+                ((WebSocketClient *)observer_)->HandleMessage(std::move(msg));
+            }
+            return COCO_SUCCESS;
+    }
+}
+
+int WebSocketConn::Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
     WebSocketHeader header;
-    header._fin = true;
-    header._reserved = 0;
     header._opcode = data_type;
     //客户端需要加密
     header._mask_flag = true;
+    std::string frame = EncodeWebSocketFrame(header, buf, len);
 
-    std::string sh = EncodeWebSocketFrameHeader(header, buf, len);
-
-    ssize_t n_write = 0;
-    // write header
-    conn_->Write((void *)sh.data(), sh.size(), &n_write);
-    return conn_->Write(buf, len, &n_write);
+    if (st_mutex_lock(write_lock_) != 0) {
+        return ERROR_THREAD_INTERRUPED;
+    }
+    int ret = conn_->Write((void *)frame.data(), frame.size(), nullptr);
+    st_mutex_unlock(write_lock_);
+    return ret;
 }
 
 int WebSocketConn::DoCycle() {
@@ -98,14 +77,27 @@ int WebSocketConn::DoCycle() {
         int nb_read = 0;
 
         if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
-            coco_error("read error: %d", ret);
+            if (!coco_is_client_gracefully_close(ret)) {
+                coco_error("websocket read error. ret=%d", ret);
+            }
             return ret;
         }
 
-        coco_error("recieved %s", buf);
-        decoder_.Decode((uint8_t *)buf, nb_read);
+        if ((ret = decoder_.Decode((uint8_t *)buf, nb_read)) != COCO_SUCCESS) {
+            break;
+        }
     }
 
+    if (ret == ERROR_WS_CLOSED) {
+        return COCO_SUCCESS;
+    }
+    if (ret == ERROR_WS_PROTOCOL || ret == ERROR_WS_MESSAGE_TOO_LARGE) {
+        // RFC 6455 7.4.1: 1002 protocol error, 1009 message too big.
+        uint16_t code = ret == ERROR_WS_PROTOCOL ? 1002 : 1009;
+        uint8_t payload[2] = {(uint8_t)(code >> 8), (uint8_t)code};
+        Send(payload, sizeof(payload), WebSocketHeader::CLOSE);
+        coco_error("websocket: bad frame from peer. ret=%d", ret);
+    }
     return ret;
 }
 

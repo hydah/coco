@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #include <functional>
 #include <memory>
@@ -32,77 +33,59 @@ class WebSocketHeader {
     } Type;
 
  public:
-    WebSocketHeader() : _mask(4) {
-        //获取_mask内部buffer的内存地址，该内存是malloc开辟的，地址为随机
-        uint64_t ptr = (uint64_t)(&_mask[0]);
-        //根据内存地址设置掩码随机数
-        _mask.assign((uint8_t *)(&ptr), (uint8_t *)(&ptr) + 4);
-    }
+    // Starts with a fresh random masking key, as RFC 6455 requires for every client frame.
+    WebSocketHeader();
     virtual ~WebSocketHeader() {}
-    void Reset() {
-        _fin = false;
-        _reserved = 0;
-        _opcode = CONTINUATION;
-        _mask_flag = false;
-        _payload_len = 0;
-        _mask.clear();
-        payload_offset_ = 0;
-    }
 
  public:
-    bool _fin;
-    uint8_t _reserved;
-    Type _opcode;
-    bool _mask_flag;
-    size_t _payload_len;
+    bool _fin = true;
+    uint8_t _reserved = 0;
+    Type _opcode = TEXT;
+    bool _mask_flag = false;
     std::vector<uint8_t> _mask;
-
-    size_t payload_offset_ = 0;
 };
 
+// A complete data message (fragments already joined) or a single control frame.
 class WebSocektMessage {
  public:
     WebSocektMessage(){};
     virtual ~WebSocektMessage(){};
 
-    WebSocketHeader::Type _opcode;
-    bool is_fragmented = false;
-    std::string cache_;
-    WebSocketHeader header_;
-    bool got_header_ = false;
-
-    std::string data_cache_;
+    // TEXT or BINARY for data messages, CLOSE / PING / PONG for control frames.
+    WebSocketHeader::Type _opcode = WebSocketHeader::TEXT;
+    // unmasked payload.
     std::string data_;
 };
 
-// Turns a byte stream into WebSocket frames. Handles frames split across or packed into
-// Decode() calls; each complete frame is handed to the callback.
+// Turns the bytes read from a connection into messages. Frames may be split across or
+// packed into Decode() calls; fragmented data messages are joined, and control frames
+// arriving between fragments are delivered on their own.
 class WebSocketFrameDecoder {
  public:
-    typedef std::function<void(std::unique_ptr<WebSocektMessage> msg)> FrameHandler;
+    // A non-zero return stops decoding; Decode() returns it.
+    typedef std::function<int(std::unique_ptr<WebSocektMessage> msg)> MessageHandler;
 
-    explicit WebSocketFrameDecoder(FrameHandler on_frame) : on_frame_(on_frame) {}
+    explicit WebSocketFrameDecoder(MessageHandler on_message) : on_message_(on_message) {}
 
-    /**
-     * 输入数据以便解包webSocket数据以及处理粘包问题
-     * @param data 需要解包的数据，可能是不完整的包或多个包
-     * @param len 数据长度
-     */
-    void Decode(uint8_t *data, size_t len);
-
-    // Called from the frame handler with a non-final data frame: the following frames
-    // are decoded into it until the message is complete.
-    void Continue(std::unique_ptr<WebSocektMessage> msg, bool mask_flag);
+    // Returns ERROR_WS_PROTOCOL or ERROR_WS_MESSAGE_TOO_LARGE for a bad peer, or the
+    // handler's error. After an error the decoder rejects all further input.
+    int Decode(const uint8_t *data, size_t len);
 
  private:
-    std::unique_ptr<WebSocektMessage> cur_msg_;
-    int _mask_offset = 0;
-    FrameHandler on_frame_;
+    int OnFrame(bool fin, WebSocketHeader::Type opcode, const uint8_t *payload, size_t size,
+                const uint8_t *mask);
+
+    // received bytes that do not form a complete frame yet.
+    std::string pending_;
+    // the data message whose final fragment has not arrived.
+    std::unique_ptr<WebSocektMessage> partial_;
+    int err_ = 0;
+    MessageHandler on_message_;
 };
 
 /**
- * 编码一个数据包的头部
- * @param header 数据头
- * @param buffer 负载数据，带掩码时原地加掩码
+ * 编码一个完整的数据包（头部 + 负载）
+ * 带掩码时只对副本加掩码，调用方的 payload 保持不变
  */
-std::string EncodeWebSocketFrameHeader(WebSocketHeader &header, uint8_t *buffer, uint32_t size);
+std::string EncodeWebSocketFrame(const WebSocketHeader &header, const uint8_t *payload,
+                                 size_t size);

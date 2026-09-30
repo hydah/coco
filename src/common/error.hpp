@@ -105,5 +105,11 @@
 #define ERROR_HTTPS_READ                    4043
 #define ERROR_HTTPS_WRITE                   4044
 #define ERROR_HTTPS_KEY_CRT                 4045
+// the peer broke RFC 6455 framing rules.
+#define ERROR_WS_PROTOCOL                   4051
+// a frame or reassembled message is larger than MAX_WS_PACKET.
+#define ERROR_WS_MESSAGE_TOO_LARGE          4052
+// the peer sent a close frame and it has been answered.
+#define ERROR_WS_CLOSED                     4053
 
 extern bool coco_is_client_gracefully_close(int error_code);

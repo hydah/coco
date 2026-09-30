@@ -15,22 +15,25 @@ class WebSocketConn : public ConnRoutine {
     WebSocketConn(void *observer, ConnManager *mgr, StreamConn *conn, HttpMessage *r);
     virtual ~WebSocketConn();
     virtual std::string GetRemoteAddr() { return conn_->RemoteAddr(); };
-    int Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_type);
+    // Sends one masked frame. Safe to call from another coroutine while this connection
+    // is answering a ping.
+    int Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type);
 
  public:
     virtual int DoCycle();
 
     /**
      * 接收到完整的一个webSocket数据包后回调
-     * @param header 数据包包头
+     * 回复 PING / CLOSE，数据消息交给 WebSocketClient
      */
-    void ProcessMessage(std::unique_ptr<WebSocektMessage> msg);
+    int ProcessMessage(std::unique_ptr<WebSocektMessage> msg);
 
  private:
-    // HttpResponseWriter rsp_writer_ = nullptr;
     HttpMessage *http_msg_ = nullptr;
     StreamConn *conn_ = nullptr;
     WebSocketFrameDecoder decoder_;
+    // Serializes whole frames: a write may yield halfway, letting another Send interleave.
+    st_mutex_t write_lock_ = nullptr;
 
     void *observer_ = nullptr;
 };
