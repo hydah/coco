@@ -1,6 +1,6 @@
 # 架构
 
-coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。代码来自 SRS 的网络层，范围是 TCP、UDP、TLS、HTTP/1.1 和 WebSocket。
+coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。支持的协议是 TCP、UDP、TLS、HTTP/1.1 和 WebSocket。
 
 源码按协议分层组织：每一层一个目录、一个静态库，只能依赖它下面的层。想看哪个协议，就打开哪个目录。
 
@@ -24,9 +24,9 @@ src/
 ├── log/
 ├── utils/                     IoReader / IoWriter、FastBuffer、地址、base64/sha1/md5
 ├── net/
-│   ├── coco_socket.hpp/.cpp   st_read / st_write 的超时和错误码
-│   ├── layer4/                传输层：TCP、UDP，只有 Conn / Listener / Dial
-│   ├── tls/                   安全层：SslConn、SslServer、SslClient
+│   ├── coco_socket.hpp/.cpp   拥有 st_netfd 的 CocoSocket：超时和错误码；建 socket、bind、connect
+│   ├── layer4/                传输层：StreamConn / StreamListener / DatagramConn 接口，TCP、UDP 实现
+│   ├── tls/                   安全层：TlsConfig、TlsConn、TlsListener、TlsDialer
 │   └── layer7/                应用层，每个协议一个目录
 │       ├── http/              编解码 http_*.h（报文、解析、HttpServeMux）；会话 coco_http（ServeHttpConn、HttpClient）
 │       └── ws/                编解码 ws_frame（帧头、WebSocketFrameDecoder）；会话 coco_ws（WebSocketConn、WebSocketClient、WebSocketHandler）
@@ -35,21 +35,25 @@ src/
 
 每个协议目录里分两种文件。编解码只做字节和报文之间的转换，不碰连接；会话在一条 `StreamConn` 上驱动编解码，负责读写和状态。
 
-`StreamConn` / `DatagramConn` 在 `net/layer4/coco_layer4.hpp`，`TcpConn` 在 `coco_tcp.hpp`，`SslConn` 在 `net/tls/coco_ssl.hpp`。协程 ID 放在 `base/coroutine.hpp` 的 `CoroutineContext` 里。
+`StreamConn` / `StreamListener` / `DatagramConn` 在 `net/layer4/coco_layer4.hpp`，都是纯接口，不含 fd。`TcpConn` / `TcpListener` 在 `coco_tcp.hpp`，`UdpConn` / `UdpListener` 在 `coco_udp.hpp`，它们各自持有一个 `CocoSocket`，析构时关闭 fd。`TlsConn` 在 `net/tls/coco_tls.hpp`，它拥有一条下层 `StreamConn`，自己不碰 fd。协程 ID 放在 `base/coroutine.hpp` 的 `CoroutineContext` 里。
+
+`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp` 返回错误码，成功时通过 `std::unique_ptr` 出参交出新连接。`DialTcp` 依次尝试解析出的每个地址。`StreamDialer` 是「给 host:port 建一条 `StreamConn`」的函数类型，`TcpDialer()` 用 `DialTcp` 实现它，`TlsDialer()` 在另一个 dialer 之上做 TLS 握手。
 
 ## 分层
 
 ```text
-server     TcpServer、HttpServer        组装：accept 循环 + 可选 TLS + 协议处理函数
-layer7     HTTP、WebSocket              只认 StreamConn，不知道下面是 TCP 还是 TLS
-tls        SslConn，内存 BIO            把一个 StreamConn 包成另一个 StreamConn
-layer4     TcpConn、UdpConn、CocoSocket  st_read / st_write / st_accept
-core       协程、日志、错误码、工具      st_thread_create
+server     TcpServer、HttpServer               组装：accept 循环 + 可选 TLS + 协议处理函数
+layer7  |  HTTP、WebSocket                     只认 StreamConn 和 StreamDialer，不知道下面是 TCP 还是 TLS
+tls     |  TlsConn、TlsListener、TlsDialer      把一个 StreamConn 包成另一个 StreamConn
+layer4     StreamConn 等接口；TcpConn、UdpConn  st_read / st_write / st_accept
+core       协程、日志、错误码、工具             st_thread_create
 ```
 
-规则只有一条：一个文件只能 include 同层或更低层的头文件。`layer7` 下的协议之间默认也互不依赖，目前唯一的例外是 `ws` 可以用 `http`，因为 WebSocket 通过 HTTP Upgrade 建立。
+`layer7` 和 `tls` 平级，互不依赖，都只依赖 `layer4`，由 `server` 或调用方组合。HTTP 和 WebSocket 的客户端不自己建连，而是调用注入的 `StreamDialer`（`layer4` 里的函数类型）：默认 `TcpDialer()`，https / wss 传 `TlsDialer()`。所以 `coco_l7` 不链接 OpenSSL，`tls` 也可以套在任何能产出 `StreamConn` 的东西上。
 
-这条规则由 ctest 里的 `LayerDependencies` 用例检查。它运行 `cmake/check_layers.cmake`，扫描 `src/` 下每一条 `#include "..."`，发现向上依赖就列出违规的文件并失败。层号和 `layer7` 内允许的依赖都写在这个脚本开头。
+规则：一个文件只能 include 同一层或层号更低的头文件；层号相同但层名不同的平级层（`layer7` 和 `tls`）互相不能 include。`layer7` 下的协议之间默认也互不依赖，目前唯一的例外是 `ws` 可以用 `http`，因为 WebSocket 通过 HTTP Upgrade 建立。
+
+这些规则由 ctest 里的 `LayerDependencies` 用例检查。它运行 `cmake/check_layers.cmake`，扫描 `src/` 下每一条 `#include "..."`，发现向上或跨平级层的依赖就列出违规的文件并失败。层号和 `layer7` 内允许的依赖都写在这个脚本开头。
 
 构建上每层一个静态库，`target_link_libraries` 只链接允许依赖的下层：
 
@@ -58,13 +62,13 @@ core       协程、日志、错误码、工具      st_thread_create
 | `coco_core` | `base/`、`common/`、`log/`、`utils/` | `st`、`pthread` |
 | `coco_l4` | `net/coco_socket.*`、`net/layer4/` | `coco_core` |
 | `coco_tls` | `net/tls/` | `coco_l4`、`ssl`、`crypto` |
-| `coco_l7` | `net/layer7/*/`、http-parser | `coco_tls` |
-| `coco_server` | `server/` | `coco_l7` |
+| `coco_l7` | `net/layer7/*/`、http-parser | `coco_l4` |
+| `coco_server` | `server/` | `coco_l7`、`coco_tls` |
 | `coco` | 聚合目标（INTERFACE） | `coco_server`，即全部 |
 
-`base/`、`log/`、`utils/` 互相引用（日志要取协程 ID，协程要打日志），所以合成一层 `coco_core`。只写 TCP 程序时可以只链接 `coco_l4`。
+`base/`、`log/`、`utils/` 互相引用（日志要取协程 ID，协程要打日志），所以合成一层 `coco_core`。只写 TCP 程序时可以只链接 `coco_l4`；只用明文 HTTP / WebSocket 时链接 `coco_l7`，不需要 OpenSSL。
 
-一条 TCP 连接的读路径是 `TcpConn::Read` → `CocoSocket::Read` → `st_read`。TLS 连接的明文读路径是 `SslConn::Read` → `SSL_read`，缺密文时再 `st_read` 喂给 `bio_in`。
+一条 TCP 连接的读路径是 `TcpConn::Read` → `CocoSocket::Read` → `st_read`。TLS 连接的明文读路径是 `TlsConn::Read` → `SSL_read`，缺密文时再调用下层的 `Read`（TCP 时就是上面那条路径）喂给 `bio_in`。
 
 I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`。HTTP 解析用 `FastBuffer` 攒字节。WebSocket 组包有 4MB 上限（`MAX_WS_PACKET`）。
 
@@ -80,8 +84,8 @@ I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`
 
 服务端的结构由 `TcpServer` 固定下来：
 
-1. 一条监听协程（`ListenRoutine`）循环 `Accept()`。`Accept` 持续失败时（例如 `EMFILE`）睡 10ms 再试，不会空转。
-2. 每个新连接一条连接协程（`ConnRoutine`）。配置了证书时，先在这条协程上包 `SslServer` 并握手，再调用处理函数，之后的读写只在这条协程里。
+1. 一条监听协程（`ListenRoutine`）循环调用 `StreamListener::Accept()`。`Accept` 持续失败时（例如 `EMFILE`）睡 10ms 再试，不会空转。`TcpServer::Serve` 接受任何 `StreamListener`；配置了证书时，它把监听器包成 `TlsListener`。
+2. 每个新连接一条连接协程（`ConnRoutine`）。TLS 握手推迟到处理函数第一次读写，所以也在这条协程上，之后的读写只在这条协程里。
 3. 处理函数返回后，连接在自己的协程里释放自己，并从 `ConnManager` 的名单里移除。`TcpServer::Stop()` 和析构函数先停监听协程，再中断所有连接并等它们退出。
 
 业务只写处理函数：
@@ -106,9 +110,9 @@ server.ListenAndServe("127.0.0.1", 8080);
 ## 协议
 
 - **TCP / UDP**：`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp`。
-- **TLS**：服务端和客户端都有。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
-- **HTTP/1.1**：`ServeHttpConn` 按 `HttpServeMux` 派发，支持 keep-alive 和 chunked。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` 返回时已经开始服务；HTTPS 由 `TcpServer` 在调用 `ServeHttpConn` 之前完成握手。`HttpClient` 能发 GET/POST，HTTPS 时先做 `SslClient` 握手。
-- **WebSocket**：在 `src/net/layer7/ws/coco_ws.cpp`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 走 TLS）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer` 或带 TLS 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。`ServeHttpConn` 处理完一个 Upgrade 请求后不再按 HTTP 读这条连接。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
+- **TLS**：服务端和客户端都有，可以套在任何 `StreamConn` 上。`TlsConfig` 共享 `SSL_CTX`，证书只加载一次。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
+- **HTTP/1.1**：`ServeHttpConn` 按 `HttpServeMux` 派发，支持 keep-alive 和 chunked。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` 返回时已经开始服务；HTTPS 由 `TcpServer` 的 `TlsListener` 提供，`ServeHttpConn` 第一次读请求时完成握手。`HttpClient` 能发 GET/POST，连接由 `Initialize` 传入的 `StreamDialer` 建立，HTTPS 时传 `TlsDialer()`。
+- **WebSocket**：在 `src/net/layer7/ws/coco_ws.cpp`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 要先 `SetTlsDialer(TlsDialer())`，否则返回 `ERROR_HTTPS_NOT_SUPPORTED`）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer` 或带 TLS 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。`ServeHttpConn` 处理完一个 Upgrade 请求后不再按 HTTP 读这条连接。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
 
 库里没有连接池，也没有 HTTP/2。一条连接对应一个 `ConnRoutine`，用完即回收。
 
@@ -125,7 +129,7 @@ server.ListenAndServe("127.0.0.1", 8080);
 | 4041–4045 | TLS | `ERROR_HTTPS_HANDSHAKE` 4042 |
 | 4051–4053 | WebSocket | `ERROR_WS_PROTOCOL` 4051，`ERROR_WS_MESSAGE_TOO_LARGE` 4052 |
 
-文件里还有一批从 SRS 留下的系统错误码（pid 文件、带宽限制等），当前网络路径不会返回它们。
+文件里还有一批系统错误码（pid 文件、带宽限制等），当前网络路径不会返回它们。
 
 ## 示例与测试
 

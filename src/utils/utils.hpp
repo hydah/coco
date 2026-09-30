@@ -125,7 +125,6 @@ class FastBuffer {
  private:
     // the user-space buffer to fill by reader,
     // which use fast index and reset when chunk body read ok.
-    // @see https://github.com/ossrs/srs/issues/248
     // ptr to the current read position.
     char *p;
     // ptr to the content end.
@@ -153,12 +152,9 @@ class FastBuffer {
      */
     virtual char *bytes();
     /**
-     * create buffer with specifeid size.
-     * @param buffer the size of buffer. ignore when smaller than
-     * SRS_MAX_SOCKET_BUFFER.
-     * @remark when MR(SRS_PERF_MERGED_READ) disabled, always set to 8K.
+     * grow the buffer to the specified size, capped at MAX_SOCKET_BUFFER.
+     * @param buffer_size the size of buffer. ignored when not bigger than the current size.
      * @remark when buffer changed, the previous ptr maybe invalid.
-     * @see https://github.com/ossrs/srs/issues/241
      */
     virtual void set_buffer(int buffer_size);
 
@@ -204,6 +200,7 @@ std::string coco_get_peer_ip(int fd);
 int coco_get_peer_port(int fd);
 std::string GetRemoteAddr(sockaddr_in &in);
 std::string GetRemoteAddr(int fd);
+std::string GetLocalAddr(int fd);
 
 struct Buffer {
     using deleter = std::function<void(uint8_t[])>;

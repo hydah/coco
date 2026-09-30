@@ -1,6 +1,11 @@
 #pragma once
 #include <deque>
 #include <sstream>
+
+#include "st.h"
+
+#include "base/coroutine.hpp"
+#include "base/coroutine_mgr.hpp"
 #include "net/layer7/http/coco_http.hpp"
 #include "net/layer7/http/http_io.h"
 #include "net/layer7/http/http_mux.h"
@@ -95,6 +100,10 @@ class WebSocketClient {
     // runs.
     virtual ~WebSocketClient();
 
+    // wss:// and Start(true, ...) connect with dialer, e.g. TlsDialer() from net/tls;
+    // without one they fail with ERROR_HTTPS_NOT_SUPPORTED. ws:// uses TcpDialer().
+    void SetTlsDialer(StreamDialer dialer) { tls_dialer_ = dialer; }
+
     // Connects to url, "ws://host[:port][/path]" or "wss://...", and completes the
     // handshake. timeout_us bounds the connect, the handshake and every write.
     int Dial(const std::string &url, uint64_t timeout_us = WS_CLIENT_TIMEOUT_US);
@@ -128,6 +137,7 @@ class WebSocketClient {
 
     std::string sec_websocket_key_;
     ConnManager *manager_;
+    StreamDialer tls_dialer_;
 
     // Owns the socket and the upgrade response the connection reads through.
     HttpClient *http_client_ = nullptr;

@@ -99,7 +99,7 @@ coroutine_fun(p):
 - **释放**：只由连接自己的协程在入口函数末尾完成。
 - **停止**：`ConnRoutine::Stop()` 只调用 `interrupt()`。之后的第一次阻塞调用返回 `EINTR`，`ShouldTermCycle()` 变为真，`DoCycle()` 返回，连接随即释放自己。
 
-析构的顺序也就固定下来：派生类析构函数运行时，`DoCycle()` 一定已经返回。不会再出现“派生类先释放了 socket，基类才去中断还阻塞在这个 socket 上的协程”。kqueue 版 ST 在 fd 上仍有等待者时，`st_netfd_close` 会失败，`Layer4Conn` 析构里的断言以前就是这样被触发的。
+析构的顺序也就固定下来：派生类析构函数运行时，`DoCycle()` 一定已经返回。不会再出现“派生类先释放了 socket，基类才去中断还阻塞在这个 socket 上的协程”。kqueue 版 ST 在 fd 上仍有等待者时，`st_netfd_close` 会失败，关闭 fd 处的断言（现在在 `CocoSocket` 析构里）以前就是这样被触发的。
 
 由此得到三条规则：
 

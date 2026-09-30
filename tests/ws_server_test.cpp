@@ -9,6 +9,7 @@
 #include "net/layer4/coco_tcp.hpp"
 #include "net/layer7/ws/coco_ws.hpp"
 #include "net/layer7/ws/ws_frame.hpp"
+#include "net/tls/coco_tls.hpp"
 #include "server/coco_http_server.hpp"
 #include "server/coco_tcp_server.hpp"
 #include "test_util.hpp"
@@ -63,8 +64,8 @@ bool PeerClosesAfterData(TcpConn *c) {
 // A hand-written client: reads the upgrade response, then frames sent by the server.
 class RawClient {
  public:
-    explicit RawClient(int port) : c_(DialTcp(kLoopback, port, kConnectTimeoutUs)) {
-        if (c_) {
+    explicit RawClient(int port) {
+        if (DialTcp(kLoopback, port, kConnectTimeoutUs, &c_) == COCO_SUCCESS) {
             c_->SetTimeout(1000 * 1000);
         }
     }
@@ -365,6 +366,7 @@ COTEST(WsServerOverTls) {
     CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     WebSocketClient ws;
+    ws.SetTlsDialer(TlsDialer());
     CHECK_EQ(ws.Dial("wss://127.0.0.1:" + std::to_string(port) + "/ws"), COCO_SUCCESS);
     CHECK_EQ(ws.Send("over tls"), COCO_SUCCESS);
     std::string got;

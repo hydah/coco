@@ -37,6 +37,7 @@ set(COCO_TEST_CASES
     TcpServerDeletedWhileAccepting
     TcpServerHandlerSeesShouldStop
     TcpServerServesTls
+    TcpServerRejectsBadTlsFiles
     TcpServerServeTwiceFails
     TcpServerIpv6
     WsEncodeLengthForms
@@ -52,6 +53,7 @@ set(COCO_TEST_CASES
     WsClientKeyIsRandom
     WsClientDialReadsAndCloses
     WsClientDialRejectsBadUrl
+    WsClientWssNeedsTlsDialer
     WsServerEchoesToClient
     WsServerHandshake
     WsServerRejectsBadUpgrade
@@ -62,6 +64,10 @@ set(COCO_TEST_CASES
     WsServerOverTls
     TlsReadFullyReturnsPlaintext
     TlsConcurrentWriters
+    TlsOverAnyStreamConn
+    TlsDialerOverAnyDialer
+    TlsHandshakesOnFirstUse
+    TlsSilentPeerDoesNotBlockAccept
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

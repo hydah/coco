@@ -1,96 +1,76 @@
 #pragma once
-#include <unistd.h>
 
-#include <assert.h>
-#include "log/log.hpp"
-#include "net/coco_socket.hpp"
+#include <sys/socket.h>
+
+#include <functional>
+#include <memory>
+#include <string>
+
 #include "utils/utils.hpp"
 
-class Layer4Conn {
+// A byte stream: TCP, TLS over any StreamConn, or anything else that reads and writes in
+// order. Write and Writev send every byte or fail. One coroutine may read while others
+// write.
+class StreamConn : public IoReaderWriter {
  public:
-    Layer4Conn(st_netfd_t stfd) {
-        stfd_ = stfd;
-        skt_ = new CocoSocket(stfd);
-    }
-    virtual ~Layer4Conn() {
-        coco_dbg("destruct layer4conn");
-        if (skt_) {
-            coco_dbg("delete skt_");
-            delete skt_;
-            skt_ = nullptr;
-        }
-
-        if (stfd_) {
-            coco_dbg("close stfd");
-            // we must ensure the close is ok.
-            int r0 = st_netfd_close(stfd_);
-            assert(r0 != -1);
-            (void)r0;
-            stfd_ = NULL;
-        }
-    }
-
-    void Release() {
-        stfd_ = nullptr;
-        if (skt_) {
-            coco_dbg("free skt_");
-            delete skt_;
-            skt_ = nullptr;
-        }
-    }
-
-    virtual st_netfd_t GetStfd() = 0;
-
-    CocoSocket *GetCocoSocket() { return skt_; };
-    void SetRecvTimeout(uint64_t timeout_us) { skt_->set_recv_timeout(timeout_us); }
-    void SetSendTimeout(uint64_t timeout_us) { skt_->set_send_timeout(timeout_us); }
-    void SetTimeout(uint64_t timeout_us) {
-        skt_->set_recv_timeout(timeout_us);
-        skt_->set_send_timeout(timeout_us);
-    }
-
- protected:
-    st_netfd_t stfd_ = nullptr;
-    CocoSocket *skt_ = nullptr;
-};
-
-class StreamConn : public Layer4Conn, public IoReaderWriter {
- public:
-    StreamConn(st_netfd_t stfd) : Layer4Conn(stfd){};
+    StreamConn() = default;
     virtual ~StreamConn() = default;
 
-    // Layer4Conn method
-    st_netfd_t GetStfd() { return stfd_; };
+    StreamConn(const StreamConn &) = delete;
+    StreamConn &operator=(const StreamConn &) = delete;
 
-    // IoReaderWriter method
-    virtual int Read(void *buf, size_t size, ssize_t *nread) {
-        return skt_->Read(buf, size, nread);
-    }
-    virtual int Write(void *buf, size_t size, ssize_t *nwrite) {
-        return skt_->Write(buf, size, nwrite);
-    }
-    virtual int Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
-        return skt_->Writev(iov, iov_size, nwrite);
-    }
-
-    virtual int ReadFully(void *buf, size_t size, ssize_t *nread) {
-        return skt_->ReadFully(buf, size, nread);
-    }
+    // Reads until size bytes arrived; *nread gets how many did, also on failure.
+    virtual int ReadFully(void *buf, size_t size, ssize_t *nread);
+    virtual std::string LocalAddr() = 0;
     virtual std::string RemoteAddr() = 0;
+    // Bound every later read or write, including those a TLS handshake does.
+    virtual void SetRecvTimeout(int64_t timeout_us) = 0;
+    virtual void SetSendTimeout(int64_t timeout_us) = 0;
+    void SetTimeout(int64_t timeout_us) {
+        SetRecvTimeout(timeout_us);
+        SetSendTimeout(timeout_us);
+    }
 };
 
-class DatagramConn : public Layer4Conn {
+// Produces StreamConns, e.g. TcpListener, or TlsListener around another listener.
+class StreamListener {
  public:
-    DatagramConn(st_netfd_t stfd) : Layer4Conn(stfd){};
+    StreamListener() = default;
+    virtual ~StreamListener() = default;
+
+    StreamListener(const StreamListener &) = delete;
+    StreamListener &operator=(const StreamListener &) = delete;
+
+    // Blocks until a peer connects; on success *conn owns the new connection.
+    virtual int Accept(std::unique_ptr<StreamConn> *conn) = 0;
+    virtual std::string Addr() = 0;
+};
+
+// Opens a StreamConn to host:port and returns an error code; on success *conn owns it.
+// timeout_us bounds connecting, and any handshake the dialer does before returning.
+// Clients take one to stay independent of how the stream is made: TcpDialer(), or
+// TlsDialer() on top of another dialer.
+typedef std::function<int(const std::string &host, int port, int64_t timeout_us,
+                          std::unique_ptr<StreamConn> *conn)>
+    StreamDialer;
+
+// Datagrams to and from any peer.
+class DatagramConn {
+ public:
+    DatagramConn() = default;
     virtual ~DatagramConn() = default;
 
-    // Layer4Conn method
-    virtual st_netfd_t GetStfd() { return stfd_; };
+    DatagramConn(const DatagramConn &) = delete;
+    DatagramConn &operator=(const DatagramConn &) = delete;
 
-    virtual int RecvFrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen) {
-        return skt_->recvfrom(buf, size, nread, from, fromlen);
-    }
-    virtual int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen) {
-        return skt_->sendto(buf, size, nwrite, to, tolen);
+    virtual int RecvFrom(void *buf, int size, ssize_t *nread, struct sockaddr *from,
+                         int *fromlen) = 0;
+    virtual int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen) = 0;
+    virtual std::string LocalAddr() = 0;
+    virtual void SetRecvTimeout(int64_t timeout_us) = 0;
+    virtual void SetSendTimeout(int64_t timeout_us) = 0;
+    void SetTimeout(int64_t timeout_us) {
+        SetRecvTimeout(timeout_us);
+        SetSendTimeout(timeout_us);
     }
 };

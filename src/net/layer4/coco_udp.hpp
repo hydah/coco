@@ -1,52 +1,50 @@
 #pragma once
 
-#include <unistd.h>
-#include <algorithm>
+#include <memory>
 #include <string>
-#include <vector>
 
 #include "net/coco_socket.hpp"
 #include "net/layer4/coco_layer4.hpp"
 
+// A datagram socket with a default peer, as returned by DialUdp.
 class UdpConn : public DatagramConn {
  public:
-    UdpConn(st_netfd_t stfd);
-    UdpConn(st_netfd_t stfd, struct sockaddr &addr, socklen_t len);
+    // Takes ownership of stfd.
+    UdpConn(st_netfd_t stfd, const sockaddr_storage &peer, socklen_t peer_len);
     virtual ~UdpConn() = default;
 
-    virtual int Read(void *buf, int size, ssize_t *nread) {
-        return RecvFrom(buf, size, nread, (struct sockaddr *)&dst_addr, &dst_addr_len);
-    };
-    virtual int Write(void *buf, int size, ssize_t *nwrite) {
-        return SendTo(buf, size, nwrite, (struct sockaddr *)&dst_addr, dst_addr_len);
-    }
+    // Receives one datagram from any sender.
+    int Read(void *buf, int size, ssize_t *nread);
+    // Sends one datagram to the peer.
+    int Write(void *buf, int size, ssize_t *nwrite);
+
+    int RecvFrom(void *buf, int size, ssize_t *nread, struct sockaddr *from,
+                 int *fromlen) override;
+    int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen) override;
+    std::string LocalAddr() override;
+    void SetRecvTimeout(int64_t timeout_us) override;
+    void SetSendTimeout(int64_t timeout_us) override;
 
  private:
-    // sockaddr is too small for IPv6 addresses.
-    sockaddr_storage dst_addr;
-    int dst_addr_len{0};
+    CocoSocket skt_;
+    sockaddr_storage peer_;
+    socklen_t peer_len_;
 };
 
-class UdpListener {
+// A bound datagram socket, as returned by ListenUdp.
+class UdpListener : public DatagramConn {
  public:
-    UdpListener(UdpConn *conn);
-    virtual ~UdpListener();
+    // Takes ownership of stfd.
+    explicit UdpListener(st_netfd_t stfd);
+    virtual ~UdpListener() = default;
 
- public:
-    virtual int close() { return 0; };
-    virtual UdpConn *accept() { return NULL; };  // not support accept now
-    virtual std::string addr();
-    virtual st_netfd_t get_stfd();
-
-    virtual int RecvFrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen);
-    virtual int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen);
-    virtual void SetRecvTimeout(int64_t timeout_us) { conn_->SetRecvTimeout(timeout_us); };
-    virtual void SetSendTimeout(int64_t timeout_us) { conn_->SetSendTimeout(timeout_us); };
-    virtual void SetTimeout(uint64_t timeout_us) {
-        conn_->SetRecvTimeout(timeout_us);
-        conn_->SetSendTimeout(timeout_us);
-    }
+    int RecvFrom(void *buf, int size, ssize_t *nread, struct sockaddr *from,
+                 int *fromlen) override;
+    int SendTo(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen) override;
+    std::string LocalAddr() override;
+    void SetRecvTimeout(int64_t timeout_us) override;
+    void SetSendTimeout(int64_t timeout_us) override;
 
  private:
-    UdpConn *conn_;
+    CocoSocket skt_;
 };

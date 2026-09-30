@@ -8,7 +8,7 @@
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "net/coco_socket.hpp"
+#include "net/layer4/coco_tcp.hpp"
 
 static int ProcessRequest(HttpServeMux *mux, HttpResponseWriter *w, HttpMessage *r) {
     int ret = COCO_SUCCESS;
@@ -80,7 +80,8 @@ HttpClient::~HttpClient() {
     coco_freep(http_msg_);
 }
 
-int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
+int HttpClient::Initialize(const std::string &host, int port, int64_t t_us,
+                           StreamDialer dialer) {
     int ret = COCO_SUCCESS;
 
     coco_freep(http_msg_);
@@ -90,15 +91,10 @@ int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
         return ret;
     }
 
-    host_ = _h;
-    port_ = p;
+    host_ = host;
+    port_ = port;
     timeout_us_ = t_us;
-
-    is_https_ = is_https;
-    // we just handle the default port when https
-    if ((is_https_) && (80 == port_)) {
-        port_ = 443;
-    }
+    dialer_ = dialer ? dialer : TcpDialer();
     method_ = "GET";
 
     return ret;
@@ -210,31 +206,15 @@ int HttpClient::Connect() {
 
     Disconnect();
 
-    // open socket.
-    auto conn = DialTcp(host_, port_, (int)timeout_us_);
-    if (conn == nullptr) {
-        coco_warn("http client failed, server=%s, port=%d, timeout=%lld", host_.c_str(), port_,
-                  (long long)timeout_us_);
-        return -1;
+    std::unique_ptr<StreamConn> conn;
+    if ((ret = dialer_(host_, port_, timeout_us_, &conn)) != COCO_SUCCESS) {
+        coco_warn("http client failed, server=%s, port=%d, timeout=%lld, ret=%d", host_.c_str(),
+                  port_, (long long)timeout_us_, ret);
+        return ret;
     }
     coco_info("connect to server success. server=%s, port=%d", host_.c_str(), port_);
-
-    if (is_https_) {
-        auto ssl = new SslClient(conn->GetStfd(), conn);
-        conn_ = ssl;
-        // The handshake does socket IO too, so it needs the timeouts.
-        conn_->SetRecvTimeout(timeout_us_);
-        conn_->SetSendTimeout(timeout_us_);
-        ret = ssl->Handshake();
-        if (ret != COCO_SUCCESS) {
-            coco_error("ssl handshake failed");
-            return ret;
-        }
-    } else {
-        conn_ = conn;
-        conn_->SetRecvTimeout(timeout_us_);
-        conn_->SetSendTimeout(timeout_us_);
-    }
+    conn->SetTimeout(timeout_us_);
+    conn_ = conn.release();
 
     connected_ = true;
 

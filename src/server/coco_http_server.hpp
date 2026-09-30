@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "net/layer7/http/coco_http.hpp"
@@ -16,7 +17,7 @@ class HttpServer {
     // Listens on ip:port and starts serving through mux, which must outlive the server.
     virtual int ListenAndServe(std::string local_ip, int local_port, HttpServeMux *mux);
     // Takes ownership of l and starts serving through mux.
-    virtual int Serve(TcpListener *l, HttpServeMux *mux);
+    virtual int Serve(std::unique_ptr<StreamListener> l, HttpServeMux *mux);
     virtual void Stop();
 
  private:

@@ -272,7 +272,6 @@ int HttpParser::on_body(http_parser *parser, const char *at, size_t length) {
     obj->state = HttpParseStateBodyStart;
 
     // Used to discover the header length.
-    // @see https://github.com/ossrs/srs/issues/1508
     obj->p_body_start = const_cast<char *>(at);
     coco_info("Body:len:%d,  %.*s", (int)length, (int)length, at);
 

@@ -3,8 +3,7 @@
 
 #include "http-parser/http_parser.h"
 
-#include "net/tls/coco_ssl.hpp"
-#include "net/layer4/coco_tcp.hpp"
+#include "net/layer4/coco_layer4.hpp"
 #include "net/layer7/http/http_io.h"
 #include "net/layer7/http/http_message.h"
 #include "net/layer7/http/http_mux.h"
@@ -27,10 +26,11 @@ class HttpClient {
     HttpClient() = default;
     virtual ~HttpClient();
 
-    /**
-     * initialize the client, connect to host and port.
-     */
-    int Initialize(bool is_https, std::string h, int p, int64_t t_us = HTTP_CLIENT_TIMEOUT_US);
+    // Prepares to talk to host:port; the connection is opened by the first request, with
+    // dialer, TcpDialer() when empty. For https pass TlsDialer() from net/tls. t_us bounds
+    // the dial and every later read and write.
+    int Initialize(const std::string &host, int port, int64_t t_us = HTTP_CLIENT_TIMEOUT_US,
+                   StreamDialer dialer = nullptr);
     bool SetMethod(std::string method);
     bool SetHeader(std::string key, std::string value);
     virtual int SendRequest();
@@ -65,7 +65,7 @@ class HttpClient {
     StreamConn *conn_ = nullptr;
     HttpMessage *http_msg_ = nullptr;
     bool connected_ = false;
-    bool is_https_ = false;
+    StreamDialer dialer_;
     int64_t timeout_us_;
     // host name or ip.
     std::string host_ = "";

@@ -224,7 +224,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 `delete handler` 触发的析构顺序：
 
 ```text
-~Session()           释放 conn_ → Layer4Conn 析构 → st_netfd_close
+~Session()           释放 conn_ → CocoSocket 析构 → st_netfd_close
                       DoCycle 已经返回，fd 上没有协程在等，close 一定成功
 ~ConnRoutine()
   delete coroutine    ~CoCoroutine → stop()：trd_ 就是当前线程，只 interrupt（cycle_done 为真，无操作），不 join
@@ -237,7 +237,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 
 从外部停止一个连接，只需要调用 `ConnRoutine::Stop()`，也就是 `interrupt()`。连接的下一次 I/O 返回 `EINTR`，`ShouldTermCycle()` 变真，`DoCycle()` 返回，然后走上面同一条释放路径。外部永远不 `delete` 一个已经启动的连接。
 
-kqueue 版 ST 在 fd 上还有协程等待时，`st_netfd_close` 会失败，`Layer4Conn` 析构里的断言会触发。以前连接由其他协程删除，派生类先关闭 socket，基类才去中断还阻塞在这个 socket 上的协程，就是这样出错的。
+kqueue 版 ST 在 fd 上还有协程等待时，`st_netfd_close` 会失败，`CocoSocket` 析构里的断言会触发。以前连接由其他协程删除，派生类先关闭 socket，基类才去中断还阻塞在这个 socket 上的协程，就是这样出错的。
 
 ### 监听协程：调用方停止、调用方释放
 

@@ -6,6 +6,8 @@
 #include <random>
 
 #include "coco_api.h"
+#include "common/error.hpp"
+#include "log/log.hpp"
 #include "utils/base64.hpp"
 #include "utils/sha1.hpp"
 
@@ -295,9 +297,13 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
         coco_error("websocket client already started");
         return ERROR_THREAD_STARTED;
     }
+    if (is_wss && !tls_dialer_) {
+        coco_error("websocket: wss needs SetTlsDialer()");
+        return ERROR_HTTPS_NOT_SUPPORTED;
+    }
     http_client_ = new HttpClient();
 
-    auto ret = http_client_->Initialize(is_wss, host, port, timeout_us);
+    auto ret = http_client_->Initialize(host, port, timeout_us, is_wss ? tls_dialer_ : nullptr);
     if (ret != COCO_SUCCESS) {
         return ret;
     }

@@ -67,7 +67,6 @@ void retrieve_local_ipv4_ips() {
         // retrieve ipv4 addr
         // ignore the tun0 network device,
         // which addr is NULL.
-        // @see: https://github.com/ossrs/srs/issues/141
         if (addr && addr->sa_family == AF_INET) {
             in_addr *inaddr = &((sockaddr_in *)addr)->sin_addr;
 
@@ -213,7 +212,6 @@ int FastBuffer::update(char *data, int required_size) {
         } else if (nb_exists_bytes < nb_buffer && p > buffer) {
             // move the left bytes to start of buffer.
             // @remark Only move memory when space is enough, or failed at next check.
-            // @see https://github.com/ossrs/srs/issues/848
             buffer = (char *)memmove(buffer, p, nb_exists_bytes);
             p = buffer;
             end = p + nb_exists_bytes;
@@ -313,7 +311,6 @@ int FastBuffer::grow(IoReader *reader, int required_size) {
         } else if (nb_exists_bytes < nb_buffer && p > buffer) {
             // move the left bytes to start of buffer.
             // @remark Only move memory when space is enough, or failed at next check.
-            // @see https://github.com/ossrs/srs/issues/848
             buffer = (char *)memmove(buffer, p, nb_exists_bytes);
             p = buffer;
             end = p + nb_exists_bytes;
@@ -465,6 +462,15 @@ std::string GetRemoteAddr(int fd) {
     sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
     if (getpeername(fd, (sockaddr *)&addr, &addrlen) == -1) {
+        return "";
+    }
+    return FormatAddr((const sockaddr *)&addr, addrlen);
+}
+
+std::string GetLocalAddr(int fd) {
+    sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    if (getsockname(fd, (sockaddr *)&addr, &addrlen) == -1) {
         return "";
     }
     return FormatAddr((const sockaddr *)&addr, addrlen);

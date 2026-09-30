@@ -4,12 +4,14 @@
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "net/layer7/ws/coco_ws.hpp"
+#include "net/tls/coco_tls.hpp"
 
 // Talks to ws_server: sends a few messages and prints the echoes.
 int main(int argc, char **argv) {
     CocoInit();
 
     WebSocketClient ws;
+    ws.SetTlsDialer(TlsDialer());
     if (ws.Dial(argc > 1 ? argv[1] : "ws://127.0.0.1:9083/echo") != COCO_SUCCESS) {
         return -1;
     }

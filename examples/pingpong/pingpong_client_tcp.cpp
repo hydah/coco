@@ -16,7 +16,7 @@ int port = 8080;
 
 class PingPongClient {
 private:
-  TcpConn *conn;
+  std::unique_ptr<TcpConn> conn;
   std::string dst_ip;
   int dst_port;
   int timeout;
@@ -36,11 +36,7 @@ PingPongClient::PingPongClient(std::string _server_ip, int _port,
   timeout = _timeout;
 }
 int PingPongClient::connect() {
-  conn = DialTcp(dst_ip, dst_port, timeout);
-  if (conn == NULL) {
-    return -1;
-  }
-  return 0;
+  return DialTcp(dst_ip, dst_port, timeout, &conn);
 }
 
 int PingPongClient::write(char *buf, ssize_t s) {

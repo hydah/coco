@@ -6,6 +6,7 @@
 #include "log/log.hpp"
 #include "net/coco_socket.hpp"
 #include "net/layer7/http/coco_http.hpp"
+#include "net/tls/coco_tls.hpp"
 
 using namespace std;
 
@@ -18,7 +19,7 @@ int main() {
     CocoInit();
 
     HttpClient hc;
-    hc.Initialize(true, server_ip, port);
+    hc.Initialize(server_ip, port, HTTP_CLIENT_TIMEOUT_US, TlsDialer());
     HttpMessage *msg;
     ret = hc.Get("/", "", &msg, "");
     if (ret != COCO_SUCCESS) {

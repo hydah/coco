@@ -1,199 +1,103 @@
 #include "net/layer4/coco_tcp.hpp"
 
-#include <assert.h>
-#include <netdb.h>
-#include <string.h>
-#include <algorithm>
+#include <sys/socket.h>
 
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
 #include "utils/utils.hpp"
 
-#define SERVER_LISTEN_BACKLOG 512
+TcpConn::TcpConn(st_netfd_t stfd) : skt_(stfd) {}
 
-TcpConn::TcpConn(st_netfd_t stfd) : StreamConn(stfd) {}
+int TcpConn::Read(void *buf, size_t size, ssize_t *nread) { return skt_.Read(buf, size, nread); }
 
-std::string TcpConn::RemoteAddr() {
-    auto fd = skt_->get_osfd();
-    return GetRemoteAddr(fd);
+int TcpConn::ReadFully(void *buf, size_t size, ssize_t *nread) {
+    return skt_.ReadFully(buf, size, nread);
 }
 
-/* TcpListener */
-TcpListener::TcpListener(TcpConn *conn) {
-    coco_dbg("enter listener construction");
-    conn_ = conn;
+int TcpConn::Write(void *buf, size_t size, ssize_t *nwrite) {
+    return skt_.Write(buf, size, nwrite);
 }
 
-TcpListener::~TcpListener() {
-    if (conn_) {
-        delete conn_;
+int TcpConn::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
+    return skt_.Writev(iov, iov_size, nwrite);
+}
+
+std::string TcpConn::LocalAddr() { return GetLocalAddr(skt_.get_osfd()); }
+
+std::string TcpConn::RemoteAddr() { return GetRemoteAddr(skt_.get_osfd()); }
+
+void TcpConn::SetRecvTimeout(int64_t timeout_us) { skt_.set_recv_timeout(timeout_us); }
+
+void TcpConn::SetSendTimeout(int64_t timeout_us) { skt_.set_send_timeout(timeout_us); }
+
+int TcpConn::CloseWrite() {
+    if (shutdown(skt_.get_osfd(), SHUT_WR) == -1) {
+        coco_error("shutdown write error. fd=%d, errno=%d", skt_.get_osfd(), errno);
+        return ERROR_SOCKET_CLOSED;
     }
+    return COCO_SUCCESS;
 }
 
-TcpConn *TcpListener::Accept() {
-    st_netfd_t stfd = GetStfd();
-    st_netfd_t client_stfd = st_accept(stfd, NULL, NULL, ST_UTIME_NO_TIMEOUT);
+TcpListener::TcpListener(st_netfd_t stfd) : skt_(stfd) {}
+
+int TcpListener::Accept(std::unique_ptr<StreamConn> *conn) {
+    std::unique_ptr<TcpConn> tcp;
+    int ret = AcceptTcp(&tcp);
+    if (ret == COCO_SUCCESS) {
+        conn->reset(tcp.release());
+    }
+    return ret;
+}
+
+int TcpListener::AcceptTcp(std::unique_ptr<TcpConn> *conn) {
+    st_netfd_t client_stfd =
+        st_accept(skt_.get_stfd(), NULL, NULL, (st_utime_t)skt_.get_recv_timeout());
     if (client_stfd == NULL) {
-        // ignore error.
-        if (errno != EINTR) {
-            coco_error("ignore accept thread stoppped for accept client error");
+        if (errno == EINTR) {
+            return ERROR_THREAD_INTERRUPED;
         }
-        return NULL;
+        if (errno == ETIME) {
+            return ERROR_SOCKET_TIMEOUT;
+        }
+        coco_error("accept client error. errno=%d", errno);
+        return ERROR_SOCKET_ACCEPT;
     }
-    auto fd = st_netfd_fileno(client_stfd);
-    coco_trace("get a client. fd=%d, remote addr: %s", fd, GetRemoteAddr(fd).c_str());
-    return new TcpConn(client_stfd);
+    conn->reset(new TcpConn(client_stfd));
+    coco_trace("get a client. fd=%d, remote addr: %s", st_netfd_fileno(client_stfd),
+               (*conn)->RemoteAddr().c_str());
+    return COCO_SUCCESS;
 }
 
-std::string TcpListener::Addr() { return std::string(); }
+std::string TcpListener::Addr() { return GetLocalAddr(skt_.get_osfd()); }
 
-st_netfd_t TcpListener::GetStfd() { return conn_->GetStfd(); }
-
-TcpListener *ListenTcp(std::string local_ip, int local_port) {
-    int ret = COCO_SUCCESS;
-    int _fd = -1;
+int ListenTcp(const std::string &ip, int port, std::unique_ptr<TcpListener> *l) {
     st_netfd_t stfd = nullptr;
-
-    char port_string[8];
-    snprintf(port_string, sizeof(port_string), "%d", local_port);
-    addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = is_ipv6(local_ip) ? AF_INET6 : AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_NUMERICHOST;
-    addrinfo *result = NULL;
-    if (getaddrinfo(local_ip.c_str(), port_string, (const addrinfo *)&hints, &result) != 0) {
-        ret = ERROR_SYSTEM_IP_INVALID;
-        coco_error("bad address. ret=%d", ret);
-        return NULL;
+    int ret = ListenSocket(ip, port, SOCK_STREAM, &stfd);
+    if (ret == COCO_SUCCESS) {
+        l->reset(new TcpListener(stfd));
     }
-
-    if ((_fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol)) == -1) {
-        ret = ERROR_SOCKET_CREATE;
-        coco_error("create linux socket error. tcp[%s:%d], ret=%d", local_ip.c_str(), local_port,
-                   ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-    coco_dbg("create linux socket success. tcp[%s:%d], fd=%d", local_ip.c_str(), local_port, _fd);
-
-    int reuse_socket = 1;
-    if (setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_socket, sizeof(int)) == -1) {
-        ret = ERROR_SOCKET_SETREUSE;
-        coco_error("setsockopt reuse-addr error. port=%d, ret=%d", local_port, ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-    coco_dbg("setsockopt reuse-addr success. port=%d, fd=%d", local_port, _fd);
-
-    if (bind(_fd, result->ai_addr, result->ai_addrlen) == -1) {
-        ret = ERROR_SOCKET_BIND;
-        coco_error("bind socket error. ep=%s:%d, ret=%d", local_ip.c_str(), local_port, ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-    coco_dbg("bind socket success. ep=%s:%d, fd=%d", local_ip.c_str(), local_port, _fd);
-
-    if (::listen(_fd, SERVER_LISTEN_BACKLOG) == -1) {
-        ret = ERROR_SOCKET_LISTEN;
-        coco_error("listen socket error. ep=%s:%d, ret=%d", local_ip.c_str(), local_port, ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-    coco_dbg("listen socket success. ep=%s:%d, fd=%d", local_ip.c_str(), local_port, _fd);
-
-    if ((stfd = st_netfd_open_socket(_fd)) == NULL) {
-        ret = ERROR_ST_OPEN_SOCKET;
-        coco_error("st_netfd_open_socket open socket failed. ep=%s:%d, ret=%d", local_ip.c_str(),
-                   local_port, ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-    coco_dbg("st open socket success. ep=%s:%d, fd=%d, stfd: %p", local_ip.c_str(), local_port, _fd,
-             stfd);
-
-    TcpListener *l = new TcpListener(new TcpConn(stfd));
-    freeaddrinfo(result);
-
-    return l;
+    return ret;
 }
 
-TcpConn *DialTcp(std::string dst_ip, int dst_port, int timeout) {
-    int ret = COCO_SUCCESS;
-    int _fd = -1;
-    st_netfd_t stfd = NULL;
-    coco_trace("port is %d", dst_port);
-
-    char port_string[8];
-    snprintf(port_string, sizeof(port_string), "%d", dst_port);
-    addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo *result = NULL;
-
-    if (getaddrinfo(dst_ip.c_str(), port_string, (const addrinfo *)&hints, &result) != 0) {
-        ret = ERROR_SYSTEM_IP_INVALID;
-        coco_error("dns resolve server error, ip empty. ret=%d", ret);
-        return NULL;
+int DialTcp(const std::string &host, int port, int64_t timeout_us,
+            std::unique_ptr<TcpConn> *conn) {
+    st_netfd_t stfd = nullptr;
+    int ret = DialStream(host, port, timeout_us, &stfd);
+    if (ret == COCO_SUCCESS) {
+        conn->reset(new TcpConn(stfd));
     }
+    return ret;
+}
 
-    // ip v4 or v6
-    char ip_c[64];
-    int success = getnameinfo(result->ai_addr, result->ai_addrlen, (char *)&ip_c, sizeof(ip_c),
-                              NULL, 0, NI_NUMERICHOST);
-    if (success != 0) {
-        freeaddrinfo(result);
-        coco_error("get ip addr from sock addr failed.");
-        return NULL;
-    }
-
-    _fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (_fd == -1) {
-        ret = ERROR_SOCKET_CREATE;
-        coco_error("[FATAL_SOCKET_CREATE]create socket error. ret=%d", ret);
-        freeaddrinfo(result);
-        return NULL;
-    }
-
-    assert(!stfd);
-    stfd = st_netfd_open_socket(_fd);
-    if (stfd == NULL) {
-        ret = ERROR_ST_OPEN_SOCKET;
-        coco_error("st_netfd_open_socket failed. ret=%d", ret);
-        ::close(_fd);
-        freeaddrinfo(result);
-        return NULL;
-    }
-
-    // connect to server.
-    std::string ip = ip_c;
-    if (ip.empty()) {
-        ret = ERROR_SYSTEM_IP_INVALID;
-        coco_error("dns resolve server error[%s], ip empty. ret=%d", ip.c_str(), ret);
-        goto failed;
-    }
-
-    if (st_connect(stfd, result->ai_addr, result->ai_addrlen, timeout) == -1) {
-        ret = ERROR_ST_CONNECT;
-        coco_error("connect to server error. ip=%s, port=%d, ret=%d", ip_c, dst_port, ret);
-        goto failed;
-    }
-
-    coco_info("connect ok. server=%s, ip=%s, port=%d", ip.c_str(), ip_c, dst_port);
-
-    freeaddrinfo(result);
-    return new TcpConn(stfd);
-
-failed:
-    if (stfd) {
-        // we must ensure the close is ok.
-        int r0 = st_netfd_close(stfd);
-        assert(r0 != -1);
-        (void)r0;
-        stfd = NULL;
-    }
-    freeaddrinfo(result);
-    return NULL;
+StreamDialer TcpDialer() {
+    return [](const std::string &host, int port, int64_t timeout_us,
+              std::unique_ptr<StreamConn> *conn) {
+        std::unique_ptr<TcpConn> tcp;
+        int ret = DialTcp(host, port, timeout_us, &tcp);
+        if (ret == COCO_SUCCESS) {
+            conn->reset(tcp.release());
+        }
+        return ret;
+    };
 }

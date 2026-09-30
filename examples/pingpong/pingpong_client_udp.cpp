@@ -14,7 +14,7 @@ int port = 8080;
 
 class PingPongClient {
 private:
-  UdpConn *conn;
+  std::unique_ptr<UdpConn> conn;
   std::string dst_ip;
   int dst_port;
   int timeout;
@@ -35,11 +35,7 @@ PingPongClient::PingPongClient(std::string _server_ip, int _port,
 }
 
 int PingPongClient::connect() {
-  conn = DialUdp(dst_ip, dst_port, timeout);
-  if (conn == NULL) {
-    return -1;
-  }
-  return 0;
+  return DialUdp(dst_ip, dst_port, timeout, &conn);
 }
 
 int PingPongClient::write(char *buf, ssize_t s) {

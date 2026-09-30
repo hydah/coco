@@ -3,6 +3,7 @@
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
+#include "net/layer4/coco_tcp.hpp"
 
 HttpServer::HttpServer(bool https) : https_(https) {}
 
@@ -25,24 +26,24 @@ TcpServerOptions HttpServer::Options() const {
 }
 
 int HttpServer::ListenAndServe(std::string local_ip, int local_port, HttpServeMux *mux) {
-    TcpListener *l = ListenTcp(local_ip, local_port);
-    if (l == nullptr) {
-        coco_error("create http listen socket failed");
-        return ERROR_SOCKET_LISTEN;
+    std::unique_ptr<TcpListener> l;
+    int ret = ListenTcp(local_ip, local_port, &l);
+    if (ret != COCO_SUCCESS) {
+        coco_error("create http listen socket failed. ret=%d", ret);
+        return ret;
     }
-    return Serve(l, mux);
+    return Serve(std::move(l), mux);
 }
 
-int HttpServer::Serve(TcpListener *l, HttpServeMux *mux) {
+int HttpServer::Serve(std::unique_ptr<StreamListener> l, HttpServeMux *mux) {
     if (server_ != nullptr) {
-        delete l;
         coco_error("http server already serving");
         return ERROR_THREAD_STARTED;
     }
 
     server_ = new TcpServer([mux](StreamConn &conn) { return ServeHttpConn(conn, mux); },
                             Options());
-    return server_->Serve(l);
+    return server_->Serve(std::move(l));
 }
 
 void HttpServer::Stop() {

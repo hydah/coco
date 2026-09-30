@@ -1,15 +1,25 @@
 #pragma once
 
+#include <sys/socket.h>
+
+#include <string>
+
 #include "st.h"
 
 #include "base/coroutine.hpp"
 #include "utils/utils.hpp"
 
+// Owns an st_netfd_t: the fd is closed when the socket is destroyed. No coroutine may
+// still be blocked on it by then, or st_netfd_close fails.
 class CocoSocket : public IoReaderWriter {
  public:
-    CocoSocket(st_netfd_t client_stfd);
-    virtual ~CocoSocket() = default;
+    explicit CocoSocket(st_netfd_t stfd);
+    virtual ~CocoSocket();
 
+    CocoSocket(const CocoSocket &) = delete;
+    CocoSocket &operator=(const CocoSocket &) = delete;
+
+    st_netfd_t get_stfd() { return stfd; }
     virtual bool is_never_timeout(int64_t timeout_us);
     virtual void set_recv_timeout(int64_t timeout_us);
     virtual int64_t get_recv_timeout();
@@ -36,3 +46,16 @@ class CocoSocket : public IoReaderWriter {
     int64_t send_bytes;
     st_netfd_t stfd;
 };
+
+// Binds a socket of socktype (SOCK_STREAM or SOCK_DGRAM) to ip:port, which must be an IP
+// literal; a stream socket also listens. On success *stfd owns the fd.
+int ListenSocket(const std::string &ip, int port, int socktype, st_netfd_t *stfd);
+
+// Resolves host and connects a stream socket to the first address that accepts within
+// timeout_us per attempt. On success *stfd owns the fd.
+int DialStream(const std::string &host, int port, int64_t timeout_us, st_netfd_t *stfd);
+
+// Resolves host and opens an unconnected datagram socket of the matching family; *peer
+// gets the address to send to. On success *stfd owns the fd.
+int DialDatagram(const std::string &host, int port, st_netfd_t *stfd, sockaddr_storage *peer,
+                 socklen_t *peer_len);

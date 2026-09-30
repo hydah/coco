@@ -6,7 +6,7 @@
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "net/layer4/coco_tcp.hpp"
-#include "net/tls/coco_ssl.hpp"
+#include "net/tls/coco_tls.hpp"
 #include "server/coco_tcp_server.hpp"
 #include "test_util.hpp"
 
@@ -28,9 +28,9 @@ int Echo(StreamConn &conn) {
     return ret;
 }
 
-TcpConn *Dial(int port) {
-    TcpConn *c = DialTcp(kLoopback, port, kConnectTimeoutUs);
-    if (c) {
+std::unique_ptr<TcpConn> Dial(int port) {
+    std::unique_ptr<TcpConn> c;
+    if (DialTcp(kLoopback, port, kConnectTimeoutUs, &c) == COCO_SUCCESS) {
         c->SetTimeout(kClientTimeoutUs);
     }
     return c;
@@ -130,9 +130,8 @@ COTEST(TcpServerDeletedWhileAccepting) {
 
     delete server;
 
-    TcpConn *refused = DialTcp(kLoopback, port, kConnectTimeoutUs);
-    CHECK(refused == nullptr);
-    delete refused;
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, port, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
 }
 
 // A handler that never blocks on the connection still learns about Stop().
@@ -172,16 +171,30 @@ COTEST(TcpServerServesTls) {
     TcpServer server(Echo, opt);
     CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
-    TcpConn *tcp = Dial(port);
+    std::unique_ptr<TcpConn> tcp = Dial(port);
     CHECK(tcp != nullptr);
     if (!tcp) {
         return;
     }
-    std::unique_ptr<SslClient> ssl(new SslClient(tcp->GetStfd(), tcp));
-    ssl->SetTimeout(kClientTimeoutUs);
-    CHECK_EQ(ssl->Handshake(), COCO_SUCCESS);
-    CHECK(WriteAll(ssl.get(), "over tls"));
-    CHECK(ReadN(ssl.get(), 8) == "over tls");
+    std::shared_ptr<TlsConfig> cfg;
+    CHECK_EQ(TlsConfig::NewClient(&cfg), COCO_SUCCESS);
+    TlsConn tls(std::move(tcp), cfg);
+    CHECK_EQ(tls.Handshake(), COCO_SUCCESS);
+    CHECK(WriteAll(&tls, "over tls"));
+    CHECK(ReadN(&tls, 8) == "over tls");
+}
+
+// A key or certificate that does not load fails Serve() instead of every handshake.
+COTEST(TcpServerRejectsBadTlsFiles) {
+    const int port = 19190;
+    TcpServerOptions opt;
+    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/missing.key";
+    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
+    TcpServer server(Echo, opt);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), ERROR_HTTPS_KEY_CRT);
+
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, port, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
 }
 
 // An IPv6 literal listens on IPv6, and peer addresses are formatted as [addr]:port.
@@ -194,8 +207,8 @@ COTEST(TcpServerIpv6) {
     });
     CHECK_EQ(server.ListenAndServe("::1", port), COCO_SUCCESS);
 
-    std::unique_ptr<TcpConn> c(DialTcp("::1", port, kConnectTimeoutUs));
-    CHECK(c != nullptr);
+    std::unique_ptr<TcpConn> c;
+    CHECK_EQ(DialTcp("::1", port, kConnectTimeoutUs, &c), COCO_SUCCESS);
     if (!c) {
         return;
     }
@@ -211,7 +224,6 @@ COTEST(TcpServerServeTwiceFails) {
     CHECK_EQ(server.ListenAndServe(kLoopback, 19197), COCO_SUCCESS);
     CHECK(server.ListenAndServe(kLoopback, 19198) != COCO_SUCCESS);
 
-    TcpConn *refused = DialTcp(kLoopback, 19198, kConnectTimeoutUs);
-    CHECK(refused == nullptr);
-    delete refused;
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, 19198, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
 }

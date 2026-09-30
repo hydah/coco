@@ -1,16 +1,22 @@
 #pragma once
 #include <stdint.h>
 
+#include <memory>
+#include <string>
+
 class UdpConn;
 class UdpListener;
 class TcpListener;
 class TcpConn;
 
-UdpListener *ListenUdp(std::string local_ip, int local_port);
-UdpConn *DialUdp(std::string dst_ip, int dst_port, int timeout);
+// Each returns an error code; on success the out parameter owns the new socket.
+// local_ip must be an IP literal. timeout_us bounds each connect attempt, or for UDP
+// every send.
+int ListenUdp(const std::string &local_ip, int local_port, std::unique_ptr<UdpListener> *l);
+int DialUdp(const std::string &host, int port, int64_t timeout_us, std::unique_ptr<UdpConn> *conn);
 
-TcpListener *ListenTcp(std::string local_ip, int local_port);
-TcpConn *DialTcp(std::string dst_ip, int dst_port, int timeout);
+int ListenTcp(const std::string &local_ip, int local_port, std::unique_ptr<TcpListener> *l);
+int DialTcp(const std::string &host, int port, int64_t timeout_us, std::unique_ptr<TcpConn> *conn);
 
 int CocoInit();
 int CocoGetCoroutineID();

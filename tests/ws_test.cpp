@@ -196,10 +196,11 @@ bool WriteAll(TcpConn *c, const std::string &data) {
 
 // Accepts one client and completes the upgrade handshake.
 TcpConn *AcceptWebSocket(TcpListener *l, std::string *key_out = nullptr) {
-    TcpConn *c = l->Accept();
-    if (!c) {
+    std::unique_ptr<TcpConn> conn;
+    if (l->AcceptTcp(&conn) != COCO_SUCCESS) {
         return nullptr;
     }
+    TcpConn *c = conn.release();
     c->SetTimeout(1000 * 1000);
     std::string req = ReadUntil(c, "\r\n\r\n");
     std::string key_hdr = "Sec-WebSocket-Key: ";
@@ -255,15 +256,15 @@ bool PeerClosed(TcpConn *c) {
 // frames arrive intact.
 COTEST(WsClientAnswersPing) {
     const int port = 19201;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
 
     bool pong_ok = false, masked = false, text_ok = false;
     st_thread_t server = cotest::Go([&]() {
-        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l.get()));
         if (!c) {
             return;
         }
@@ -290,22 +291,22 @@ COTEST(WsClientAnswersPing) {
     CHECK(masked);
     CHECK(text_ok);
     delete ws;
-    delete l;
+    l.reset();
 }
 
 // A close frame is answered with the same status code, then the client drops the
 // connection and refuses to send.
 COTEST(WsClientAnswersClose) {
     const int port = 19202;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
 
     bool close_ok = false, closed = false;
     st_thread_t server = cotest::Go([&]() {
-        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l.get()));
         if (!c) {
             return;
         }
@@ -325,7 +326,7 @@ COTEST(WsClientAnswersClose) {
     std::string msg = "late";
     CHECK_EQ(ws->Send((uint8_t *)&msg[0], msg.size()), ERROR_WS_CLOSED);
     delete ws;
-    delete l;
+    l.reset();
 }
 
 // The peer half-closes and stops reading. The read coroutine sees EOF and exits while
@@ -333,19 +334,19 @@ COTEST(WsClientAnswersClose) {
 // until it times out, and later sends are refused.
 COTEST(WsClientSendBlockedWhenReadSideEnds) {
     const int port = 19203;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
 
     bool release = false;
     st_thread_t server = cotest::Go([&]() {
-        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l.get()));
         if (!c) {
             return;
         }
-        shutdown(st_netfd_fileno(c->GetStfd()), SHUT_WR);
+        c->CloseWrite();
         cotest::WaitUntil([&]() { return release; }, 5000);
     });
 
@@ -360,22 +361,22 @@ COTEST(WsClientSendBlockedWhenReadSideEnds) {
     release = true;
     st_thread_join(server, NULL);
     delete ws;
-    delete l;
+    l.reset();
 }
 
 // Deleting the client while another coroutine is parked in Send waits for that Send to
 // give up, instead of freeing the socket and lock under it.
 COTEST(WsClientDeletedWhileSending) {
     const int port = 19204;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
 
     bool release = false;
     st_thread_t server = cotest::Go([&]() {
-        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l.get()));
         cotest::WaitUntil([&]() { return release; }, 5000);
     });
 
@@ -398,15 +399,15 @@ COTEST(WsClientDeletedWhileSending) {
     st_thread_join(sender, NULL);
     release = true;
     st_thread_join(server, NULL);
-    delete l;
+    l.reset();
 }
 
 // After Dial the caller reads: ReadMessage answers a PING on the way to the next data
 // message, and deleting the client closes with CLOSE 1000.
 COTEST(WsClientDialReadsAndCloses) {
     const int port = 19206;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
@@ -414,10 +415,11 @@ COTEST(WsClientDialReadsAndCloses) {
     std::string request;
     bool pong_ok = false, close_ok = false;
     st_thread_t server = cotest::Go([&]() {
-        TcpConn *c = l->Accept();
-        if (!c) {
+        std::unique_ptr<TcpConn> conn;
+        if (l->AcceptTcp(&conn) != COCO_SUCCESS) {
             return;
         }
+        TcpConn *c = conn.get();
         c->SetTimeout(1000 * 1000);
         request = ReadUntil(c, "\r\n\r\n");
         std::string key;
@@ -432,7 +434,6 @@ COTEST(WsClientDialReadsAndCloses) {
         WriteAll(c, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                     "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
                         base64::Encode(sha, sizeof(sha)) + "\r\n\r\n");
-        std::unique_ptr<TcpConn> conn(c);
         WriteAll(c, Frame(WS::PING, "hb") + Frame(WS::TEXT, "hi"));
         // The PONG and the CLOSE may arrive in one read, so one decoder takes both.
         Collector got;
@@ -460,7 +461,7 @@ COTEST(WsClientDialReadsAndCloses) {
     CHECK(request.find("Host: 127.0.0.1:" + std::to_string(port) + "\r\n") != std::string::npos);
     CHECK(pong_ok);
     CHECK(close_ok);
-    delete l;
+    l.reset();
 }
 
 COTEST(WsClientDialRejectsBadUrl) {
@@ -471,11 +472,18 @@ COTEST(WsClientDialRejectsBadUrl) {
     }
 }
 
+// wss:// is refused before connecting when no TLS dialer was set.
+COTEST(WsClientWssNeedsTlsDialer) {
+    WebSocketClient ws;
+    CHECK_EQ(ws.Dial("wss://127.0.0.1:19207/"), ERROR_HTTPS_NOT_SUPPORTED);
+    CHECK(ws.Closed());
+}
+
 // Every connection sends a fresh 16-byte nonce as its key.
 COTEST(WsClientKeyIsRandom) {
     const int port = 19205;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
@@ -483,7 +491,7 @@ COTEST(WsClientKeyIsRandom) {
     std::string keys[2];
     for (int i = 0; i < 2; ++i) {
         st_thread_t server = cotest::Go([&, i]() {
-            std::unique_ptr<TcpConn> c(AcceptWebSocket(l, &keys[i]));
+            std::unique_ptr<TcpConn> c(AcceptWebSocket(l.get(), &keys[i]));
         });
         WebSocketClient ws;
         CHECK_EQ(ws.Start(false, kLoopback, port, "/"), COCO_SUCCESS);
@@ -491,5 +499,5 @@ COTEST(WsClientKeyIsRandom) {
     }
     CHECK_EQ(keys[0].size(), 24);
     CHECK(keys[0] != keys[1]);
-    delete l;
+    l.reset();
 }

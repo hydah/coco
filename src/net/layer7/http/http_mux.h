@@ -104,8 +104,8 @@ class HttpServeMux {
     // the vhost handler.
     // when find the handler to process the request,
     // append the matched vhost when pattern not starts with /,
-    // for example, for pattern /live/livestream.flv of vhost ossrs.net,
-    // the path will rewrite to ossrs.net/live/livestream.flv
+    // for example, for pattern /index.html of vhost example.com,
+    // the path will rewrite to example.com/index.html
     std::map<std::string, IHttpHandler *> vhosts;
     void *connection_;
 

@@ -16,9 +16,10 @@ set(COCO_LAYERS
   "net/coco_socket:1:l4"
   "net/layer4/:1:l4"
   "net/tls/:2:tls"
-  "net/layer7/:3:l7"
-  "server/:4:server"
+  "net/layer7/:2:l7"
+  "server/:3:server"
 )
+# 层号相同但层名不同的是平级层，互相不能 include：tls 和 l7 都只依赖 l4，由 server 组合。
 
 # layer7 下每个目录是一个协议，协议之间默认互不依赖；允许的依赖写成 依赖方:被依赖方。
 # WebSocket 靠 HTTP Upgrade 建立，所以 ws 可以用 http。
@@ -75,6 +76,8 @@ foreach(src ${sources})
 
     if(LAYER_RANK GREATER from_rank)
       list(APPEND violations "${src} (${from_name}) -> ${inc} (${LAYER_NAME})")
+    elseif(LAYER_RANK EQUAL from_rank AND NOT LAYER_NAME STREQUAL from_name)
+      list(APPEND violations "${src} (${from_name}) -> ${inc} (${LAYER_NAME}, same rank)")
     elseif(from_proto AND L7_PROTO AND NOT from_proto STREQUAL L7_PROTO)
       list(FIND COCO_L7_ALLOWED "${from_proto}:${L7_PROTO}" allowed)
       if(allowed EQUAL -1)

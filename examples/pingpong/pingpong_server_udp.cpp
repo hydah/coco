@@ -17,40 +17,35 @@ int port = 8080;
 
 class PingPongListener : public ListenRoutine {
 public:
-  PingPongListener(UdpListener *l);
+  explicit PingPongListener(std::unique_ptr<UdpListener> l);
   virtual ~PingPongListener();
 
   virtual int Cycle();
 
 private:
-  UdpListener *l_;
+  std::unique_ptr<UdpListener> l_;
 };
 
-PingPongListener::PingPongListener(UdpListener *l) { l_ = l; }
+PingPongListener::PingPongListener(std::unique_ptr<UdpListener> l) : l_(std::move(l)) {}
 
-PingPongListener::~PingPongListener() {
-  Stop();
-  if (l_) {
-    delete l_;
-    l_ = nullptr;
-  }
-}
+PingPongListener::~PingPongListener() { Stop(); }
 
 int PingPongListener::Cycle() {
   char buf[1024];
-  ssize_t nread = 1024;
+  ssize_t nread = 0;
   ssize_t nwrite = 0;
   struct sockaddr_in addr;
-  int len = 2048;
   int ret = 0;
   while (!ShouldTermCycle()) {
-    ret = l_->RecvFrom(buf, len, &nread, (struct sockaddr *)&addr, &len);
+    int addrlen = sizeof(addr);
+    // One byte is kept for the terminating NUL.
+    ret = l_->RecvFrom(buf, sizeof(buf) - 1, &nread, (struct sockaddr *)&addr, &addrlen);
     if (ret != COCO_SUCCESS) {
       continue;
     }
     buf[nread] = '\0';
     coco_trace("read from: %s, size: %d, buf: %s", GetRemoteAddr(addr).c_str(), int(nread), buf);
-    l_->SendTo(buf, (int)nread, &nwrite, (struct sockaddr *)&addr, len);
+    l_->SendTo(buf, (int)nread, &nwrite, (struct sockaddr *)&addr, addrlen);
   }
 
   return ret;
@@ -60,12 +55,13 @@ int main() {
   log_level = log_dbg;
   CocoInit();
 
-  UdpListener *l = ListenUdp(local_ip, port);
-  if (l == nullptr) {
-    coco_error("create listen socket failed");
+  std::unique_ptr<UdpListener> l;
+  int ret = ListenUdp(local_ip, port, &l);
+  if (ret != COCO_SUCCESS) {
+    coco_error("create listen socket failed. ret=%d", ret);
     return -1;
   }
-  PingPongListener *pl = new PingPongListener(l);
+  PingPongListener *pl = new PingPongListener(std::move(l));
   pl->Start();
 
   CocoLoopMs(1000);

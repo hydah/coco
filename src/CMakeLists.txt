@@ -1,8 +1,9 @@
 # CMake 最低版本号要求
 cmake_minimum_required (VERSION 3.5)
 
-# 每层一个静态库，只链接它允许依赖的下层：
-#   coco_server -> coco_l7 -> coco_tls -> coco_l4 -> coco_core
+# 每层一个静态库，只链接它允许依赖的下层。tls 和 l7 平级、互不依赖，由 server 组合：
+#   coco_server -> coco_l7  -> coco_l4 -> coco_core
+#               -> coco_tls -> coco_l4
 # 头文件层面的依赖方向由 tests 里的 LayerDependencies 用例检查（cmake/check_layers.cmake）。
 
 # 协程运行时、错误码、日志、工具。这几个目录互相引用，只能作为一层。
@@ -27,13 +28,14 @@ target_link_libraries(coco_tls PUBLIC coco_l4 ssl crypto)
 # 应用层协议：每个协议一个目录，里面是编解码和会话。
 aux_source_directory(./net/layer7/http L7_SRCS)
 aux_source_directory(./net/layer7/ws L7_SRCS)
+# 连接由注入的 StreamDialer 建立，所以不依赖 TLS，也不链接 OpenSSL。
 add_library(coco_l7 ${L7_SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
-target_link_libraries(coco_l7 PUBLIC coco_tls)
+target_link_libraries(coco_l7 PUBLIC coco_l4)
 
 # 服务运行框架：accept 循环、连接生命周期、把连接交给协议处理函数。
 aux_source_directory(./server SERVER_SRCS)
 add_library(coco_server ${SERVER_SRCS})
-target_link_libraries(coco_server PUBLIC coco_l7)
+target_link_libraries(coco_server PUBLIC coco_l7 coco_tls)
 
 set(COCO_LAYER_LIBS coco_core coco_l4 coco_tls coco_l7 coco_server)
 foreach(lib ${COCO_LAYER_LIBS})

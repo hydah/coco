@@ -67,9 +67,8 @@ COTEST(HttpServerDeletedWhileAccepting) {
 
     delete server;
 
-    TcpConn *refused = DialTcp(kLoopback, port, kConnectTimeoutUs);
-    CHECK(refused == nullptr);
-    delete refused;
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, port, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
 }
 
 // A keep-alive connection is parked in Parse() waiting for the next request when the
@@ -82,7 +81,8 @@ COTEST(HttpServerDeletedWithOpenKeepAliveConn) {
     HttpServer *server = new HttpServer(false);
     CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
 
-    std::unique_ptr<TcpConn> client(DialTcp(kLoopback, port, kConnectTimeoutUs));
+    std::unique_ptr<TcpConn> client;
+    DialTcp(kLoopback, port, kConnectTimeoutUs, &client);
     CHECK(client != nullptr);
     if (!client) {
         delete server;
@@ -107,7 +107,8 @@ COTEST(HttpServerClosesNonKeepAliveConn) {
     HttpServer *server = new HttpServer(false);
     CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
 
-    std::unique_ptr<TcpConn> client(DialTcp(kLoopback, port, kConnectTimeoutUs));
+    std::unique_ptr<TcpConn> client;
+    DialTcp(kLoopback, port, kConnectTimeoutUs, &client);
     CHECK(client != nullptr);
     if (client) {
         CHECK(WriteAll(client.get(), "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"));
@@ -123,17 +124,18 @@ COTEST(HttpServerClosesNonKeepAliveConn) {
 // ends and frees the connection; later calls on the client must not touch it.
 COTEST(WebSocketClientAfterPeerClose) {
     const int port = 19184;
-    TcpListener *l = ListenTcp(kLoopback, port);
-    CHECK(l != nullptr);
+    std::unique_ptr<TcpListener> l;
+    CHECK_EQ(ListenTcp(kLoopback, port, &l), COCO_SUCCESS);
     if (!l) {
         return;
     }
 
-    st_thread_t server = cotest::Go([l]() {
-        TcpConn *c = l->Accept();
-        if (!c) {
+    st_thread_t server = cotest::Go([&l]() {
+        std::unique_ptr<TcpConn> conn;
+        if (l->AcceptTcp(&conn) != COCO_SUCCESS) {
             return;
         }
+        TcpConn *c = conn.get();
         std::string req = ReadUntil(c, "\r\n\r\n");
         std::string key_hdr = "Sec-WebSocket-Key: ";
         size_t pos = req.find(key_hdr);
@@ -152,13 +154,12 @@ COTEST(WebSocketClientAfterPeerClose) {
                  "Sec-WebSocket-Accept: " +
                      base64::Encode(sha, sizeof(sha)) + "\r\n\r\n");
         CocoSleepMs(20);
-        delete c;
     });
 
     WebSocketClient *ws = new WebSocketClient();
     CHECK_EQ(ws->Start(false, kLoopback, port, "/"), COCO_SUCCESS);
     st_thread_join(server, NULL);
-    delete l;
+    l.reset();
 
     // Let the client's connection coroutine observe EOF and exit.
     CocoSleepMs(50);

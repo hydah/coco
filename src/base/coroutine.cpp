@@ -244,7 +244,6 @@ int CocoInit() {
 
 #ifdef __linux__
     // check epoll, some old linux donot support epoll.
-    // @see https://github.com/ossrs/srs/issues/162
     if (!st_epoll_is_supported()) {
         ret = ERROR_ST_SET_EPOLL;
         coco_error("epoll required on Linux. ret=%d", ret);
