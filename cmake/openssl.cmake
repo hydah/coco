@@ -12,14 +12,18 @@ set(COCO_OPENSSL_INCLUDE_DIR   ${BUILD_PREFIX_ROOT}/include)
 
 set(COCO_OPENSSL_SRC_URL       ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openssl-1.1.1g.tar.gz)
 # Platform-specific OpenSSL configuration
-if(APPLE)
-    # Use the generic config script for macOS which auto-detects architecture
-    set(COCO_OPENSSL_CONFIGURE cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && ./config no-shared --prefix=${BUILD_PREFIX_ROOT})
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    set(COCO_OPENSSL_CONFIGURE cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && ./Configure darwin64-arm64-cc
+        --config=${CMAKE_CURRENT_SOURCE_DIR}/cmake/openssl-darwin-arm64.conf no-shared --prefix=${BUILD_PREFIX_ROOT}
+        -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+elseif(APPLE)
+    set(COCO_OPENSSL_CONFIGURE cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && ./Configure darwin64-x86_64-cc no-shared --prefix=${BUILD_PREFIX_ROOT}
+        -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
 else()
     set(COCO_OPENSSL_CONFIGURE cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/config no-shared --prefix=${BUILD_PREFIX_ROOT})
 endif()
-set(COCO_OPENSSL_MAKE          cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && make)
-set(COCO_OPENSSL_INSTALL       cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && make install)
+set(COCO_OPENSSL_MAKE          cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && make build_libs)
+set(COCO_OPENSSL_INSTALL       cd ${COCO_OPENSSL_ROOT}/src/COCO_OPENSSL_PROJECT/ && make install_dev)
 
 ExternalProject_Add(COCO_OPENSSL_PROJECT
         URL                   ${COCO_OPENSSL_SRC_URL}

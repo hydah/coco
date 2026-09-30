@@ -1,5 +1,5 @@
 # CMake 最低版本号要求
-cmake_minimum_required (VERSION 3.1.0)
+cmake_minimum_required (VERSION 3.5)
 
 aux_source_directory(. SRCS)
 aux_source_directory(./base SRCS)
@@ -20,6 +20,7 @@ set(SRCS
 # 指定生成目标
 add_library(coco ${SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
 # 添加链接库
-target_link_libraries(coco libst.a pthread)
+target_link_libraries(coco st pthread)
+add_dependencies(coco COCO_OPENSSL_PROJECT)
 set_property(TARGET coco PROPERTY POSITION_INDEPENDENT_CODE ON)
 install(TARGETS coco ARCHIVE DESTINATION ${PROJECT_SOURCE_DIR}/dist/lib)

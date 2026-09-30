@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5)
+
+# Must be set before project(); also passed to the OpenSSL build so all objects agree.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
 project(coco C CXX)
 
@@ -33,10 +36,7 @@ set(CXX_FLAGS "${CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(ab
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
  
 # Architecture-specific flags
-if(APPLE)
-    # macOS-specific flags - let the compiler choose the native architecture
-    list(APPEND CXX_FLAGS "-mmacosx-version-min=10.15")
-elseif(CMAKE_BUILD_BITS EQUAL 32)
+if(NOT APPLE AND CMAKE_BUILD_BITS EQUAL 32)
     list(APPEND CXX_FLAGS "-m32")
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
