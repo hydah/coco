@@ -54,7 +54,7 @@ I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`
 
 1. `ListenRoutine` 的协程里循环 `Accept()`。
 2. 每个新连接 `new` 一个 `ConnRoutine` 并 `Start()`，之后的读写只在这条连接的协程里。
-3. `DoCycle()` 返回后基类 `Remove(this)`，由 `ConnManager` 的清理协程 `delete`。
+3. `DoCycle()` 返回后，连接在自己的协程里 `delete` 自己，析构时从 `ConnManager` 的名单里移除。`ConnManager` 析构时中断剩下的连接，并等它们全部退出。
 
 业务侧继承 `ListenRoutine` 或 `ConnRoutine`，而不是直接继承 `CoCoroutine`。`examples/pingpong/` 和 `examples/http-server/` 是这个结构的两个实例。
 
@@ -83,4 +83,4 @@ I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`
 
 ## 示例与测试
 
-仓库没有单元测试。`./build.sh -t` 只会打印还没有配置测试。回归靠 `examples/` 里的程序：TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端）用来手动验证。

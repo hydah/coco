@@ -156,7 +156,8 @@ HttpServer::Cycle
         HttpMessage::Parse(conn)   多次 SslConn::Read，得到明文 HTTP
         mux 写响应                 SslConn::Write
       Cycle 返回
-      ConnManager::Remove          清理协程 delete，析构里关闭 st_netfd
+      delete HttpServerConn        仍在这条协程上，析构里关闭 st_netfd
+        ConnManager::Remove        从存活名单里移除
 ```
 
 明文只出现在 `SSL_read` / `SSL_write` 的缓冲区。TCP 上的字节始终是 TLS 记录，日志里的 `handshake done, TLSv1.3` 来自 `SSL_get_version`。

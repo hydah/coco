@@ -43,7 +43,7 @@ chmod +x build.sh
 | `-v` | 把 cmake/make 的输出打到终端，而不是 `build/` 下的日志 |
 | `--no-examples` | 不编译 `examples/` |
 | `-i` | 编译完成后 `make install`，产物在仓库里的 `dist/` |
-| `-t` | 预留的测试开关。仓库里没有测试目标，运行后只会提示还没有配置测试 |
+| `-t` | 编译完成后在 `build/` 里跑 `ctest`，有失败时脚本以非零退出 |
 
 不用脚本时：
 
@@ -62,11 +62,33 @@ cmake --build build -j
 | `lib/libcoco.a` | coco |
 | `lib/libst.a` | State Threads |
 | `thirdparty/temp/out_libs/openssl-<version>/lib/` | `libssl.a`、`libcrypto.a` |
-| `build/bin/` | 示例程序 |
+| `build/bin/` | 示例程序、`coco_tests` |
 
 OpenSSL 版本写在 `cmake/openssl.cmake`（当前 3.5.9）。第一次配置会从 GitHub 下载源码包并校验 SHA256，只编译库，不编译 OpenSSL 自带的测试和文档。离线构建时把对应的 `openssl-<version>.tar.gz` 放到 `thirdparty/`，CMake 会用本地文件，不再下载。`thirdparty/temp/` 和 `thirdparty/openssl-*.tar.gz` 都不进版本库。
 
 Linux 上事件系统是 epoll，OpenSSL 用上游的 `./config` 探测本机。macOS 上事件系统是 kqueue。
+
+## 测试
+
+测试在 `tests/`，不依赖外部测试框架。ctest 把每个用例注册成单独的进程，超时 10 秒，所以一个用例崩溃或卡住只会算在它自己头上。用例会在 `127.0.0.1` 上监听 19181–19184 端口。
+
+```bash
+./build.sh -t                               # Release 构建并跑测试
+cd build && ctest --output-on-failure       # 已经构建过时直接跑
+./build/bin/coco_tests ConnStopDoesNotWait  # 单独跑一个用例；不带参数则在一个进程里跑全部
+```
+
+新增用例时，除了在源文件里用 `COTEST(Name)` 定义，还要把名字加进 `tests/CMakeLists.txt` 的 `COCO_TEST_CASES`。
+
+排查内存问题时可以开 AddressSanitizer。ST 会自己切换栈，所以要关掉“栈返回后使用”检测：
+
+```bash
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCOCO_ENABLE_ASAN=ON -DCOCO_BUILD_EXAMPLES=OFF
+cmake --build build-asan -j --target coco_tests
+cd build-asan && ASAN_OPTIONS=detect_stack_use_after_return=0 ctest --output-on-failure
+```
+
+`-DCOCO_BUILD_TESTS=OFF` 可以不编译测试。
 
 ## 跑示例
 

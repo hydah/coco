@@ -2,12 +2,15 @@
 
 coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻塞点不进内核睡眠，而是让出当前协程，由 State Threads（ST）在 epoll（Linux）或 kqueue（macOS）上等到 I/O 就绪再切回来。业务代码写成普通的顺序调用。
 
+这篇讲使用规则。ST 内部怎么调度、`Cycle()` 怎么被调用到、`CoCoroutine` 各个状态字段的含义，见 [State Threads 与 src/base 的实现](st.md)。
+
 相关代码：
 
 - `src/base/coroutine.hpp`、`src/base/coroutine.cpp`：`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
 - `src/base/coroutine_mgr.hpp`、`src/base/coroutine_mgr.cpp`：`ConnManager`
 - `src/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
 - `thirdparty/st`：调度、事件系统和上下文切换
+- `tests/coroutine_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试
 
 ## 一个线程，多段栈
 
@@ -37,113 +40,97 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 
 主协程如果在 `main` 里空转而不让出，其他协程得不到运行。示例程序在启动监听协程之后调用 `CocoLoopMs()`，用 `st_usleep` 把主协程挂起，事件循环才能转起来。
 
-## 两类协程
+## 两类协程，两种归属
 
 ```mermaid
 flowchart TD
     main["主协程<br/>CocoInit / CocoLoopMs"]
-    listen["ListenRoutine<br/>循环 Accept"]
-    conn["ConnRoutine<br/>DoCycle 读写这条连接"]
-    cleanup["ConnManager 清理协程<br/>delete 已结束的连接"]
-    main -->|"Start()"| listen
+    listen["ListenRoutine<br/>循环 Accept，归调用方所有"]
+    conn["ConnRoutine<br/>DoCycle 读写这条连接，归自己所有"]
+    mgr["ConnManager<br/>存活连接的名单"]
+    main -->|"Start() / Stop() / delete"| listen
     listen -->|"每个新连接 Start()"| conn
-    conn -->|"Cycle 结束时 Remove(this)"| cleanup
-    cleanup -->|"delete，内部 join"| conn
+    conn -->|"Start 成功时 Push，析构时 Remove"| mgr
+    mgr -->|"Shutdown：interrupt 并等名单变空"| conn
 ```
 
-`ListenRoutine` 和 `ConnRoutine` 都是 `CoroutineHandler`。真正的 ST 线程放在 `CoCoroutine` 里：`start()` 调用 `st_thread_create(coroutine_fun, ..., joinable=1, stack_size)`。入口函数调用 `handler->Cycle()`，返回后把错误码留在协程对象上，供 `join` 的一方读取。
+`ListenRoutine` 和 `ConnRoutine` 都是 `CoroutineHandler`。真正的 ST 线程放在 `CoCoroutine` 里，入口函数 `coroutine_fun` 调用 `handler->Cycle()`，错误码留在 `trd_err_` 上。两类协程的区别在于谁负责释放：
+
+| | `ListenRoutine` | `ConnRoutine` |
+| --- | --- | --- |
+| ST 线程 | 可 join | 不可 join（`set_detached(true)`） |
+| 谁 `delete` | 调用方 | 自己的协程，`Cycle()` 返回之后 |
+| `Stop()` | 中断并等 `Cycle()` 返回 | 只中断，不等 |
 
 监听协程的 `Cycle()` 是一个循环：
 
 ```text
-while (true) {
+while (!ShouldTermCycle()) {
     conn = listener->Accept();   // st_accept，没有连接就让出
-    new XxxServer(manager, conn)->Start();
+    if (conn == NULL) {
+        if (ShouldTermCycle()) break;   // 被 Stop() 中断
+        sleep 10ms; continue;           // EMFILE 之类的错误不会阻塞，不退让会饿死其他协程
+    }
+    c = new XxxServer(manager, conn);
+    if (c->Start() != OK) delete c;     // 没启动起来，仍归这里所有
 }
 ```
 
-`Accept()` 返回后，监听协程只负责 `new` 和 `Start()`，然后立刻回到 `Accept()`。单条连接上的读、写、协议解析都在这条连接自己的协程里，通过 `DoCycle()` 完成。`HttpServer`、TCP pingpong 都是这个结构。
+中断后 `Accept()` 会立刻返回空。循环不检查 `ShouldTermCycle()` 的话，这条协程会一直空转，从不让出，`Stop()` 里的 join 也就永远等不到它退出。
 
-`ConnRoutine` 构造时做两件事：创建名为 `"conn"` 的 `CoCoroutine`，并 `manager_->Push(this)`。`Start()` 之后 ST 会调度到 `Cycle()`：
+## 连接在自己的栈上释放自己
 
-```text
-ret = DoCycle();
-把对端正常关闭归一成 ERROR_SOCKET_CLOSED;
-manager_->Remove(this);   // 此时协程还在自己的栈上
-return;
-```
-
-`DoCycle()` 里看到 `ShouldTermCycle()` 为真就应退出。该标志来自 `CoCoroutine::pull()`，也就是 `interrupt()` 写下的 `trd_err_`。
-
-## 连接不能释放自己
-
-`Remove(this)` 发生时，调用栈大致是：
+连接协程结束时，入口函数这样收尾：
 
 ```text
-ST 栈帧
-  coroutine_fun
-    CoCoroutine::cycle
-      ConnRoutine::Cycle
-        HttpServerConn::DoCycle     // 已经返回
-        ConnManager::Remove
+coroutine_fun(p):
+    err = p->cycle();          // ConnRoutine::Cycle -> DoCycle
+    p->cycle_done = true;
+    if (p->detached_)
+        delete p->handler;     // ~XxxServer -> ~ConnRoutine -> ~CoCoroutine
+    return NULL;
 ```
 
-对象的成员、`DoCycle` 的局部变量都在这段栈上。`delete this` 会进入 `~ConnRoutine()`，后者 `interrupt` 并 `delete` 协程对象，`~CoCoroutine()` 再 `st_thread_join` 自己。自己 join 自己没有意义，而且析构会把正在使用的栈释放掉。
+`delete` 发生时，调用栈还在这条协程自己的栈上。这是安全的，因为 ST 对不可 join 的线程是在 `st_thread_exit` 里、也就是协程函数返回之后，才把栈交回空闲链表（`thirdparty/st/sched.c`）。在那之前，析构函数可以照常用这段栈，甚至可以让出，比如关闭 TLS 时要写数据。
 
-所以 `Remove` 只做移交：
+以前的设计认为“连接不能释放自己”，是因为 `~CoCoroutine` 会 join 自己：ST 对自 join 直接返回 `EDEADLK`，旧代码又会解引用 join 的返回值。现在 `CoCoroutine::stop()` 发现调用方就是协程本身时，只做 `interrupt`，不 join；不可 join 的协程也从不 join。释放和停止分成了两条路径：
 
-1. 从 `conns` 移到 `zombies`。
-2. 必要时创建清理协程。
-3. `st_cond_signal`，然后返回。
+- **释放**：只由连接自己的协程在入口函数末尾完成。
+- **停止**：`ConnRoutine::Stop()` 只调用 `interrupt()`。之后的第一次阻塞调用返回 `EINTR`，`ShouldTermCycle()` 变为真，`DoCycle()` 返回，连接随即释放自己。
 
-连接协程接着从 `Cycle()` 和 `coroutine_fun` 返回，ST 才认为这条协程结束。清理协程随后 `delete` 这个对象。析构里的 `st_thread_join` 此时要么立刻成功（协程已经退出），要么让出清理协程，直到目标协程退出后再继续释放。栈的释放发生在协程函数返回之后。
+析构的顺序也就固定下来：派生类析构函数运行时，`DoCycle()` 一定已经返回。不会再出现“派生类先释放了 socket，基类才去中断还阻塞在这个 socket 上的协程”。kqueue 版 ST 在 fd 上仍有等待者时，`st_netfd_close` 会失败，`Layer4Conn` 析构里的断言以前就是这样被触发的。
 
-这也是清理协程要单独存在的原因。以前 `Destroy()` 写在下一次 `Accept()` 之前：没有新连接，已结束的连接就不会被 `delete`，套接字也不关闭。握手失败的服务端会一直占着连接，对端阻塞在读上。
+由此得到三条规则：
+
+1. `Start()` 成功以后，任何其他代码都不能 `delete` 这个连接。`~CoCoroutine` 用断言检查这一点。
+2. `Start()` 失败时，对象仍归调用方，调用方负责 `delete`。
+3. 在连接之外保存它的指针，必须在连接析构时收到通知。`WebSocketClient` 的做法是：`~WebSocketConn` 调用 `OnConnClosed(this)`，客户端把 `conn_` 置空，之后 `Send` 返回错误，而不是访问已经释放的对象。
 
 ## ConnManager
 
-`ConnManager` 有两份名单：
+`ConnManager` 不再释放任何东西，只维护一份存活连接的名单：
 
-- `conns`：`Push` 进来、`Cycle` 尚未结束的连接。
-- `zombies`：`Remove` 过、等待 `delete` 的连接。
+- `Push`：`ConnRoutine::Start()` 成功时调用。
+- `Remove`：`~ConnRoutine` 的最后一步调用。名单变空时 `st_cond_broadcast`。
+- `Shutdown`：先对名单里每个连接调用 `Stop()`，再 `st_cond_wait` 直到名单变空。
+- 析构函数：调用 `Shutdown()`，然后销毁条件变量。
 
-清理协程和条件变量在第一次 `Remove` 时创建。`Remove` 一定运行在某条连接协程里，此时 `st_init()` 已经完成，可以安全调用 `st_cond_new` 和 `st_thread_create`。服务端一个监听循环配一个 `ConnManager`（`HttpServer`、pingpong 都是这样）。WebSocket 客户端同样用它管理自己的连接协程。
+所以 `ConnManager` 必须比登记在它上面的连接活得久，而析构函数正好会等到它们都退出。`HttpServer` 的析构顺序因此是：先 `Stop()` 监听协程，再 `delete manager`（等所有连接退出，它们用到的 mux 此时还在），最后 `delete` 监听 socket。
 
-清理循环：
-
-```text
-while (!quit) {
-    if (zombies 为空)
-        st_cond_wait(cond);    // 没活干才等，避免丢掉信号
-    if (quit)
-        break;
-    Destroy();
-}
-```
-
-ST 的条件变量不计数。清理协程正在 `Destroy()` 里时发来的 `st_cond_signal` 没有等待者，信号会丢。因此等在循环顶部，而且只在名单已经空的时候等。`Destroy()` 返回后如果期间又有新的僵尸，下一轮直接清理，不再依赖那次丢失的信号。
-
-`Destroy()` 先把 `zombies` 换到局部向量里再逐个 `delete`：
+`Shutdown` 的等待循环不会丢信号：
 
 ```text
-dead.swap(zombies);
-for (conn : dead)
-    delete conn;    // ~ConnRoutine -> join，可能让出
+for (conn : 名单的副本) conn->Stop();   // interrupt 不让出
+while (!名单为空)
+    st_cond_wait(cond);
 ```
 
-`delete` 里的 `join` 会让出清理协程。若在让出期间仍用成员 `zombies` 遍历，并发的另一次 `Destroy()` 可能删到同一个指针。换走之后，成员名单只接收新的 `Remove`，这次要释放的集合不再变化。当前只有清理协程和析构函数调用 `Destroy()`，析构会先把清理协程 `join` 掉，两者不会同时进 `Destroy()`；换走名单把这个不变量留在函数里面，而不是依赖调用方。
+在检查名单和进入 `st_cond_wait` 之间没有任何让出点，所以最后那次 `Remove` 只可能发生在 `Shutdown` 已经挂在条件变量上的时候。如果 `Shutdown` 所在的协程自己被中断了，`st_cond_wait` 会提前返回，循环再等一轮。`CoCoroutine::stop()` 的 join 也是同样的处理：遇到 `EINTR` 就重试，否则提前返回会在协程还在跑的时候释放它。
 
-析构顺序：
-
-1. `quit_ = true`，`st_thread_interrupt` 清理协程并 `st_thread_join` 它。清理协程若正堵在 `st_cond_wait`，中断使其返回，看到 `quit_` 后退出。`cleanup_trd_` 随后置空。
-2. `Destroy()` 清掉此时已经在列的僵尸。
-3. `delete` 仍在 `conns` 里的连接。析构里的 `interrupt` 让这些协程的 I/O 返回，`Cycle` 再调用 `Remove`。
-4. `st_cond_destroy`。
-
-第 3 步有一个关停窗口。`Remove` 看到 `cleanup_trd_` 已经为空，会再创建一条清理协程去 `delete` 这个连接，而步骤 3 的 `delete` 还没返回。正常收包路径不经过这里：连接都是自己 `Remove`，由当时那条清理协程释放。`HttpServer` 的析构发生在进程退出时，文件描述符会随进程一起关掉。
+`Shutdown` 不能在它管理的某条连接里调用，否则会等自己退出。它结束后 `ConnManager` 仍然可以继续使用。
 
 ## 和业务代码的边界
 
-业务侧继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`。`DoCycle()` 里的 `Read` / `Write` 可以按同步代码来写，该让出的时候 ST 会让出。循环条件加上 `ShouldTermCycle()`，这样 `Stop()` 或析构里的 `interrupt` 能在下一次 I/O 返回后结束循环。
+业务侧继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`。`DoCycle()` 里的 `Read` / `Write` 可以按同步代码来写，该让出的时候 ST 会让出。收到中断后，`DoCycle()` 必须尽快返回：循环条件里加上 `ShouldTermCycle()`，I/O 出错时不要吞掉错误继续阻塞。`Shutdown` 和监听协程的 `Stop()` 都要等这一步完成才会返回。
 
-`Cycle()` 末尾的 `Remove(this)` 由基类调用，派生类不要自己 `delete` 连接，也不要在 `DoCycle()` 里 `delete this`。监听循环也不再需要在 `Accept()` 前调用 `Destroy()`，回收由 `ConnManager` 的清理协程完成。
+继承 `ListenRoutine` 的类，要在自己的析构函数开头调用 `Stop()`。基类析构函数运行时，派生类的成员已经释放了，在那里停协程为时已晚。
