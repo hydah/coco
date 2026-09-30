@@ -58,6 +58,11 @@ int SslConn::Read(void* plaintext, size_t nn_plaintext, ssize_t* nread) {
 
         // Need to read more data to feed SSL.
         if (r0 == -1 && r1 == SSL_ERROR_WANT_READ) {
+            // SSL_read may queue records to send, e.g. a TLS 1.3 KeyUpdate response.
+            if ((err = FlushOutput()) != COCO_SUCCESS) {
+                return err;
+            }
+
             // TODO: Can we avoid copy?
             int nn_cipher = (int)nn_plaintext;
             std::unique_ptr<char[]> cipher(new char[nn_cipher]);
@@ -88,6 +93,7 @@ int SslConn::Read(void* plaintext, size_t nn_plaintext, ssize_t* nread) {
 
 int SslConn::Write(void* plaintext, size_t nn_plaintext, ssize_t* nwrite) {
     int err = COCO_SUCCESS;
+    ssize_t written = 0;
 
     for (char* p = (char*)plaintext; p < (char*)plaintext + nn_plaintext;) {
         int left = (int)nn_plaintext - (int)(p - (char*)plaintext);
@@ -100,19 +106,13 @@ int SslConn::Write(void* plaintext, size_t nn_plaintext, ssize_t* nwrite) {
 
         // Move p to the next writing position.
         p += r0;
+        written += r0;
         if (nwrite) {
-            *nwrite += (ssize_t)r0;
+            *nwrite = written;
         }
 
-        uint8_t* data = NULL;
-        long size = BIO_get_mem_data(bio_out, &data);
-        if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-            coco_error("https: write data=%p, size=%ld", data, size);
+        if ((err = FlushOutput()) != COCO_SUCCESS) {
             return err;
-        }
-        if ((r0 = BIO_reset(bio_out)) != 1) {
-            coco_error("BIO_reset r0=%d", r0);
-            return ERROR_HTTPS_WRITE;
         }
     }
 
@@ -121,10 +121,17 @@ int SslConn::Write(void* plaintext, size_t nn_plaintext, ssize_t* nwrite) {
 
 int SslConn::Writev(const iovec* iov, int iov_size, ssize_t* nwrite) {
     int err = COCO_SUCCESS;
+    ssize_t total = 0;
 
     for (int i = 0; i < iov_size; i++) {
         const iovec* p = iov + i;
-        if ((err = Write((void*)p->iov_base, (size_t)p->iov_len, nwrite)) != COCO_SUCCESS) {
+        ssize_t n = 0;
+        err = Write((void*)p->iov_base, (size_t)p->iov_len, &n);
+        total += n;
+        if (nwrite) {
+            *nwrite = total;
+        }
+        if (err != COCO_SUCCESS) {
             coco_error("write iov #%d base=%p, size=%d", i, p->iov_base, (int)p->iov_len);
             return err;
         }
@@ -138,181 +145,152 @@ std::string SslConn::RemoteAddr() {
     return GetRemoteAddr(fd);
 }
 
-SslServer::SslServer(st_netfd_t _stfd, StreamConn* under_layer) : SslConn(_stfd, under_layer) {}
-
-int SslServer::Handshake(std::string key_file, std::string crt_file) {
+int SslConn::FlushOutput() {
     int err = COCO_SUCCESS;
 
+    uint8_t* data = NULL;
+    long size = BIO_get_mem_data(bio_out, &data);
+    if (size <= 0) {
+        return err;
+    }
+
+    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
+        coco_error("https: write data=%p, size=%ld", data, size);
+        return err;
+    }
+
+    int r0 = BIO_reset(bio_out);
+    if (r0 != 1) {
+        coco_error("BIO_reset r0=%d", r0);
+        return ERROR_HTTPS_WRITE;
+    }
+
+    return err;
+}
+
+int SslConn::DoHandshake() {
+    int err = COCO_SUCCESS;
+
+    while (true) {
+        int r0 = SSL_do_handshake(ssl);
+        int r1 = SSL_get_error(ssl, r0);
+
+        // Send whatever this step produced, including the final flight when r0 == 1.
+        if ((err = FlushOutput()) != COCO_SUCCESS) {
+            return err;
+        }
+
+        if (r0 == 1) {
+            coco_info("https: handshake done, %s", SSL_get_version(ssl));
+            return err;
+        }
+
+        if (r1 != SSL_ERROR_WANT_READ) {
+            coco_error("handshake r0=%d, r1=%d", r0, r1);
+            return ERROR_HTTPS_HANDSHAKE;
+        }
+
+        // Unconsumed bytes stay in bio_in, so never reset it: records that
+        // arrive with the last flight (e.g. application data) must not be lost.
+        char buf[4096];
+        ssize_t nn = 0;
+        if ((err = skt_->Read(buf, sizeof(buf), &nn)) != COCO_SUCCESS) {
+            coco_error("handshake: read");
+            return err;
+        }
+
+        if ((r0 = BIO_write(bio_in, buf, (int)nn)) <= 0) {
+            coco_error("BIO_write r0=%d, data=%p, size=%d", r0, buf, (int)nn);
+            return ERROR_HTTPS_HANDSHAKE;
+        }
+    }
+}
+
+static SSL_CTX* NewSslCtx() {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
 #else
     OPENSSL_init_ssl(0, NULL);
 #endif
-    // For HTTPS, try to connect over security transport.
-#if (OPENSSL_VERSION_NUMBER <= 0x100020cfL)  // v1.0.2
-    ssl_ctx = SSL_CTX_new(TLSv1_method());
-    coco_info("ssl v1.0.2l");
-#else
-    ssl_ctx = SSL_CTX_new(TLS_method());
-    coco_info("ssl v1.1.1");
-#endif
-    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-    if (SSL_CTX_set_cipher_list(ssl_ctx, "ALL") != 1) {
-        coco_error("SSL_CTX_set_cipher_list");
-        return ERROR_HTTPS_HANDSHAKE;
-    }
 
+#if (OPENSSL_VERSION_NUMBER <= 0x100020cfL)  // v1.0.2
+    SSL_CTX* ctx = SSL_CTX_new(TLSv1_method());
+#else
+    SSL_CTX* ctx = SSL_CTX_new(TLS_method());
+#endif
+    if (ctx == NULL) {
+        coco_error("SSL_CTX_new");
+        return NULL;
+    }
+    coco_info("ssl: %s", OPENSSL_VERSION_TEXT);
+
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    if (SSL_CTX_set_cipher_list(ctx, "ALL") != 1) {
+        coco_error("SSL_CTX_set_cipher_list");
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+// Create ssl and its memory BIOs; on failure the caller's destructor frees what was set.
+static int SetupSsl(SSL_CTX* ctx, SSL** ssl, BIO** bio_in, BIO** bio_out) {
     // TODO: Setup callback, see SSL_set_ex_data and SSL_set_info_callback
-    if ((ssl = SSL_new(ssl_ctx)) == NULL) {
+    if ((*ssl = SSL_new(ctx)) == NULL) {
         coco_error("SSL_new ssl");
         return ERROR_HTTPS_HANDSHAKE;
     }
 
-    if ((bio_in = BIO_new(BIO_s_mem())) == NULL) {
+    if ((*bio_in = BIO_new(BIO_s_mem())) == NULL) {
         coco_error("BIO_new in");
         return ERROR_HTTPS_HANDSHAKE;
     }
 
-    if ((bio_out = BIO_new(BIO_s_mem())) == NULL) {
-        BIO_free(bio_in);
+    if ((*bio_out = BIO_new(BIO_s_mem())) == NULL) {
+        BIO_free(*bio_in);
+        *bio_in = NULL;
         coco_error("BIO_new out");
         return ERROR_HTTPS_HANDSHAKE;
     }
 
-    SSL_set_bio(ssl, bio_in, bio_out);
+    SSL_set_bio(*ssl, *bio_in, *bio_out);
+    SSL_set_mode(*ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
+    return COCO_SUCCESS;
+}
+
+SslServer::SslServer(st_netfd_t _stfd, StreamConn* under_layer) : SslConn(_stfd, under_layer) {}
+
+int SslServer::Handshake(std::string key_file, std::string crt_file) {
+    int err = COCO_SUCCESS;
+
+    if ((ssl_ctx = NewSslCtx()) == NULL) {
+        return ERROR_HTTPS_HANDSHAKE;
+    }
+    if ((err = SetupSsl(ssl_ctx, &ssl, &bio_in, &bio_out)) != COCO_SUCCESS) {
+        return err;
+    }
 
     // SSL setup active, as server role.
     SSL_set_accept_state(ssl);
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
-
-    uint8_t* data = NULL;
-    int r0, r1;
-    long size;
 
     // Setup the key and cert file for server.
-    if ((r0 = SSL_use_certificate_file(ssl, crt_file.c_str(), SSL_FILETYPE_PEM)) != 1) {
+    if (SSL_use_certificate_file(ssl, crt_file.c_str(), SSL_FILETYPE_PEM) != 1) {
         coco_error("use cert %s", crt_file.c_str());
         return ERROR_HTTPS_KEY_CRT;
     }
 
-    if ((r0 = SSL_use_RSAPrivateKey_file(ssl, key_file.c_str(), SSL_FILETYPE_PEM)) != 1) {
+    if (SSL_use_PrivateKey_file(ssl, key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
         coco_error("use key %s", key_file.c_str());
         return ERROR_HTTPS_KEY_CRT;
     }
 
-    if ((r0 = SSL_check_private_key(ssl)) != 1) {
+    if (SSL_check_private_key(ssl) != 1) {
         coco_error("check key %s with cert %s", key_file.c_str(), crt_file.c_str());
         return ERROR_HTTPS_KEY_CRT;
     }
     coco_info("ssl: use key %s and cert %s", key_file.c_str(), crt_file.c_str());
 
-    // Receive ClientHello
-    while (true) {
-        char buf[1024];
-        ssize_t nn = 0;
-        if ((err = skt_->Read(buf, sizeof(buf), &nn)) != COCO_SUCCESS) {
-            coco_error("handshake: read");
-            return err;
-        }
-
-        if ((r0 = BIO_write(bio_in, buf, (int)nn)) <= 0) {
-            // TODO: 0 or -1 maybe block, use BIO_should_retry to check.
-            coco_error("BIO_write r0=%d, data=%p, size=%d", r0, buf, (int)nn);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        r0 = SSL_do_handshake(ssl);
-        r1 = SSL_get_error(ssl, r0);
-        if (r0 != -1 || r1 != SSL_ERROR_WANT_READ) {
-            coco_error("handshake r0=%d, r1=%d", r0, r1);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        if ((size = BIO_get_mem_data(bio_out, &data)) > 0) {
-            // OK, reset it for the next write.
-            if ((r0 = BIO_reset(bio_in)) != 1) {
-                coco_error("BIO_reset r0=%d", r0);
-                return ERROR_HTTPS_HANDSHAKE;
-            }
-            break;
-        }
-    }
-
-    coco_info("https: ClientHello done");
-
-    // Send ServerHello, Certificate, Server Key Exchange, Server Hello Done
-    size = BIO_get_mem_data(bio_out, &data);
-    if (!data || size <= 0) {
-        coco_error("handshake data=%p, size=%ld", data, size);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-        coco_error("handshake: write data=%p, size=%ld", data, size);
-        return err;
-    }
-    if ((r0 = BIO_reset(bio_out)) != 1) {
-        coco_error("BIO_reset r0=%d", r0);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    coco_info("https: ServerHello done");
-
-    // Receive Client Key Exchange, Change Cipher Spec, Encrypted Handshake Message
-    while (true) {
-        char buf[1024];
-        ssize_t nn = 0;
-        if ((err = skt_->Read(buf, sizeof(buf), &nn)) != COCO_SUCCESS) {
-            coco_error("handshake: read");
-            return err;
-        }
-
-        if ((r0 = BIO_write(bio_in, buf, (int)nn)) <= 0) {
-            // TODO: 0 or -1 maybe block, use BIO_should_retry to check.
-            coco_error("BIO_write r0=%d, data=%p, size=%d", r0, buf, (int)nn);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        r0 = SSL_do_handshake(ssl);
-        r1 = SSL_get_error(ssl, r0);
-        if (r0 == 1 && r1 == SSL_ERROR_NONE) {
-            break;
-        }
-
-        if (r0 != -1 || r1 != SSL_ERROR_WANT_READ) {
-            coco_error("handshake r0=%d, r1=%d", r0, r1);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        if ((size = BIO_get_mem_data(bio_out, &data)) > 0) {
-            // OK, reset it for the next write.
-            if ((r0 = BIO_reset(bio_in)) != 1) {
-                coco_error("BIO_reset r0=%d", r0);
-                return ERROR_HTTPS_HANDSHAKE;
-            }
-            break;
-        }
-    }
-
-    coco_info("https: Client done");
-
-    // Send New Session Ticket, Change Cipher Spec, Encrypted Handshake Message
-    size = BIO_get_mem_data(bio_out, &data);
-    if (!data || size <= 0) {
-        coco_error("handshake data=%p, size=%ld", data, size);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-        coco_error("handshake: write data=%p, size=%ld", data, size);
-        return err;
-    }
-    if ((r0 = BIO_reset(bio_out)) != 1) {
-        coco_error("BIO_reset r0=%d", r0);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    coco_info("https: Server done");
-
-    return err;
+    return DoHandshake();
 }
 
 SslClient::SslClient(st_netfd_t _stfd, StreamConn* under_layer) : SslConn(_stfd, under_layer) {}
@@ -320,146 +298,15 @@ SslClient::SslClient(st_netfd_t _stfd, StreamConn* under_layer) : SslConn(_stfd,
 int SslClient::Handshake() {
     int err = COCO_SUCCESS;
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    SSL_library_init();
-#else
-    OPENSSL_init_ssl(0, NULL);
-#endif
-    // For HTTPS, try to connect over security transport.
-#if (OPENSSL_VERSION_NUMBER <= 0x100020cfL)  // v1.0.2
-    ssl_ctx = SSL_CTX_new(TLSv1_method());
-    coco_info("ssl v1.0.2l");
-#else
-    ssl_ctx = SSL_CTX_new(TLS_method());
-    coco_info("ssl v1.1.1");
-#endif
-    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-    if (SSL_CTX_set_cipher_list(ssl_ctx, "ALL") != 1) {
-        coco_error("SSL_CTX_set_cipher_list");
+    if ((ssl_ctx = NewSslCtx()) == NULL) {
         return ERROR_HTTPS_HANDSHAKE;
     }
-
-    // TODO: Setup callback, see SSL_set_ex_data and SSL_set_info_callback
-    if ((ssl = SSL_new(ssl_ctx)) == NULL) {
-        coco_error("SSL_new ssl");
-        return ERROR_HTTPS_HANDSHAKE;
+    if ((err = SetupSsl(ssl_ctx, &ssl, &bio_in, &bio_out)) != COCO_SUCCESS) {
+        return err;
     }
-
-    if ((bio_in = BIO_new(BIO_s_mem())) == NULL) {
-        coco_error("BIO_new in");
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    if ((bio_out = BIO_new(BIO_s_mem())) == NULL) {
-        BIO_free(bio_in);
-        coco_error("BIO_new out");
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    SSL_set_bio(ssl, bio_in, bio_out);
 
     // SSL setup active, as client role.
     SSL_set_connect_state(ssl);
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
-    // Send ClientHello.
-    int r0 = SSL_do_handshake(ssl);
-    int r1 = SSL_get_error(ssl, r0);
-    if (r0 != -1 || r1 != SSL_ERROR_WANT_READ) {
-        coco_error("handshake r0=%d, r1=%d", r0, r1);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    uint8_t* data = NULL;
-    long size = BIO_get_mem_data(bio_out, &data);
-    if (!data || size <= 0) {
-        coco_error("handshake data=%p, size=%ld", data, size);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-        coco_error("handshake: write data=%p, size=%ld", data, size);
-        return err;
-    }
-    if ((r0 = BIO_reset(bio_out)) != 1) {
-        coco_error("BIO_reset r0=%d", r0);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    coco_info("https: ClientHello done");
-
-    // Receive ServerHello, Certificate, Server Key Exchange, Server Hello Done
-    while (true) {
-        char buf[512];
-        ssize_t nn = 0;
-        if ((err = skt_->Read(buf, sizeof(buf), &nn)) != COCO_SUCCESS) {
-            coco_error("handshake: read");
-            return err;
-        }
-
-        if ((r0 = BIO_write(bio_in, buf, (int)nn)) <= 0) {
-            // TODO: 0 or -1 maybe block, use BIO_should_retry to check.
-            coco_error("BIO_write r0=%d, data=%p, size=%d", r0, buf, (int)nn);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        if ((r0 = SSL_do_handshake(ssl)) != -1 ||
-            (r1 = SSL_get_error(ssl, r0)) != SSL_ERROR_WANT_READ) {
-            coco_error("handshake r0=%d, r1=%d", r0, r1);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        if ((size = BIO_get_mem_data(bio_out, &data)) > 0) {
-            // OK, reset it for the next write.
-            if ((r0 = BIO_reset(bio_in)) != 1) {
-                coco_error("BIO_reset r0=%d", r0);
-                return ERROR_HTTPS_HANDSHAKE;
-            }
-            break;
-        }
-    }
-
-    coco_info("https: ServerHello done");
-
-    // Send Client Key Exchange, Change Cipher Spec, Encrypted Handshake Message
-    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-        coco_error("handshake: write data=%p, size=%ld", data, size);
-        return err;
-    }
-    if ((r0 = BIO_reset(bio_out)) != 1) {
-        coco_error("BIO_reset r0=%d", r0);
-        return ERROR_HTTPS_HANDSHAKE;
-    }
-
-    coco_info("https: Client done");
-
-    // Receive New Session Ticket, Change Cipher Spec, Encrypted Handshake Message
-    while (true) {
-        char buf[128];
-        ssize_t nn = 0;
-        if ((err = skt_->Read(buf, sizeof(buf), &nn)) != COCO_SUCCESS) {
-            coco_error("handshake: read");
-            return err;
-        }
-
-        if ((r0 = BIO_write(bio_in, buf, (int)nn)) <= 0) {
-            // TODO: 0 or -1 maybe block, use BIO_should_retry to check.
-            coco_error("BIO_write r0=%d, data=%p, size=%d", r0, buf, (int)nn);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-
-        r0 = SSL_do_handshake(ssl);
-        r1 = SSL_get_error(ssl, r0);
-        if (r0 == 1 && r1 == SSL_ERROR_NONE) {
-            break;
-        }
-
-        if (r0 != -1 || r1 != SSL_ERROR_WANT_READ) {
-            coco_error("handshake r0=%d, r1=%d", r0, r1);
-            return ERROR_HTTPS_HANDSHAKE;
-        }
-    }
-
-    coco_info("https: Server done");
-
-    return err;
+    return DoHandshake();
 }

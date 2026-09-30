@@ -169,6 +169,6 @@ inline void calc(void const *src, size_t bytelength, unsigned char *hash) {
     }
 }
 
-inline std::string calc(std::string src, unsigned char *sha) { calc(src.c_str(), src.size(), sha); }
+inline void calc(std::string src, unsigned char *sha) { calc(src.c_str(), src.size(), sha); }
 
 }  // namespace sha1

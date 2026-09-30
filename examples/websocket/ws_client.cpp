@@ -13,6 +13,7 @@ string server_ip = "183.2.143.77";
 int port = 443;
 int OnMessage(WebSocketConn* conn, std::unique_ptr<WebSocektMessage> msg) {
     std::cout << "get " << msg->data_ << endl;
+    return 0;
 }
 
 int main() {

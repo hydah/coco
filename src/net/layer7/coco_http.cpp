@@ -189,8 +189,14 @@ int HttpClient::Initialize(bool is_https, std::string _h, int p, int64_t t_us) {
     return ret;
 }
 
-bool HttpClient::SetMethod(std::string method) { method_ = method; }
-bool HttpClient::SetHeader(std::string key, std::string value) { http_header_.set(key, value); }
+bool HttpClient::SetMethod(std::string method) {
+    method_ = method;
+    return true;
+}
+bool HttpClient::SetHeader(std::string key, std::string value) {
+    http_header_.set(key, value);
+    return true;
+}
 
 int HttpClient::SendRequest() {
     int ret = COCO_SUCCESS;
@@ -301,6 +307,9 @@ int HttpClient::Connect() {
     if (is_https_) {
         auto ssl = new SslClient(conn->GetStfd(), conn);
         conn_ = ssl;
+        // The handshake does socket IO too, so it needs the timeouts.
+        conn_->SetRecvTimeout(timeout_us_);
+        conn_->SetSendTimeout(timeout_us_);
         ret = ssl->Handshake();
         if (ret != COCO_SUCCESS) {
             coco_error("ssl handshake failed");
@@ -308,10 +317,10 @@ int HttpClient::Connect() {
         }
     } else {
         conn_ = conn;
+        conn_->SetRecvTimeout(timeout_us_);
+        conn_->SetSendTimeout(timeout_us_);
     }
 
-    conn_->SetRecvTimeout(timeout_us_);
-    conn_->SetSendTimeout(timeout_us_);
     connected_ = true;
 
     return ret;

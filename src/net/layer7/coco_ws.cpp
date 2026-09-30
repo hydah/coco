@@ -332,13 +332,17 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
 }
 
 int WebSocketClient::Stop() {
-    conn_->Stop();
+    if (conn_ != nullptr) {
+        conn_->Stop();
+    }
+    return COCO_SUCCESS;
 }
 
 int WebSocketClient::HandleMessage(std::unique_ptr<WebSocektMessage> msg) {
     if (message_handler_ != nullptr) {
-        message_handler_(conn_, std::move(msg));
+        return message_handler_(conn_, std::move(msg));
     }
+    return COCO_SUCCESS;
 }
 int WebSocketClient::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_type) {
     if (conn_ == nullptr) return -1;

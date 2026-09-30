@@ -18,12 +18,17 @@ class SslConn : public StreamConn {
     std::string RemoteAddr();
 
  protected:
+    // Drive SSL_do_handshake until done, independent of TLS version and flight layout.
+    int DoHandshake();
+    // Send whatever SSL has queued in bio_out to the peer.
+    int FlushOutput();
+
     // The under-layer plaintext transport.
     StreamConn* under_layer_ = nullptr;
     SSL_CTX* ssl_ctx;
     SSL* ssl;
-    BIO* bio_in;
-    BIO* bio_out;
+    BIO* bio_in = nullptr;
+    BIO* bio_out = nullptr;
 };
 
 class SslServer : public SslConn {
