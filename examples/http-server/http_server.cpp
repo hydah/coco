@@ -6,7 +6,7 @@
 #include "common/error.hpp"
 #include "log/log.hpp"
 #include "net/coco_socket.hpp"
-#include "net/layer7/coco_http.hpp"
+#include "server/coco_http_server.hpp"
 
 using namespace std;
 
@@ -42,7 +42,6 @@ int main() {
         coco_error("listen failed");
         return -1;
     }
-    httpServer->Start();
 
     CocoLoopMs(1000);
 

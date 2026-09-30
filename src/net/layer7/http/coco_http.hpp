@@ -3,46 +3,17 @@
 
 #include "http-parser/http_parser.h"
 
-#include "net/layer4/coco_ssl.hpp"
+#include "net/tls/coco_ssl.hpp"
 #include "net/layer4/coco_tcp.hpp"
-#include "protocol/http/http_io.h"
-#include "protocol/http/http_message.h"
-#include "protocol/http/http_mux.h"
+#include "net/layer7/http/http_io.h"
+#include "net/layer7/http/http_message.h"
+#include "net/layer7/http/http_mux.h"
 #include "utils/utils.hpp"
 
-class HttpServerConn : public ConnRoutine {
- public:
-    HttpServerConn(ConnManager *manager, TcpConn *conn, HttpServeMux *mux);
-    HttpServerConn(ConnManager *manager, SslServer *conn, HttpServeMux *mux);
-    virtual ~HttpServerConn();
-
- public:
-    virtual int DoCycle();
-    int ProcessRequest(HttpResponseWriter *w, HttpMessage *r);
-    virtual std::string GetRemoteAddr() { return conn_->RemoteAddr(); };
-
- private:
-    StreamConn *conn_ = nullptr;
-    HttpServeMux *_mux = nullptr;
-    HttpMessage *http_msg_ = nullptr;
-    bool https_ = false;
-};
-
-class HttpServer : public ListenRoutine {
- public:
-    HttpServer(bool https);
-    virtual ~HttpServer();
-
-    virtual int ListenAndServe(std::string local_ip, int local_port, HttpServeMux *mux);
-    virtual int Serve(TcpListener *l, HttpServeMux *mux);
-    virtual int Cycle();
-
- private:
-    TcpListener *_l;
-    HttpServeMux *_mux;
-    ConnManager *manager;
-    bool https_ = false;
-};
+// Serves HTTP/1.1 requests on conn through mux until the peer closes, a request is not
+// keep-alive, or the coroutine is stopped. conn may be plain TCP or already-handshaken TLS.
+// The parsed message's observer is &conn.
+int ServeHttpConn(StreamConn &conn, HttpServeMux *mux);
 
 // the default timeout for http client. 1s
 #define HTTP_CLIENT_TIMEOUT_US (int64_t)(1 * 1000 * 1000LL)

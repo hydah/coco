@@ -1,10 +1,10 @@
-#include "protocol/http/http_message.h"
+#include "net/layer7/http/http_message.h"
 
 #include <assert.h>
 
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "protocol/http/http_io.h"
+#include "net/layer7/http/http_io.h"
 HttpMessage::HttpMessage() {
     chunked = false;
     infinite_chunked = false;

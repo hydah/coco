@@ -1,12 +1,12 @@
-#include "protocol/http/http_mux.h"
+#include "net/layer7/http/http_mux.h"
 
 #include <assert.h>
 #include <string.h>
 
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "protocol/http/http_io.h"
-#include "protocol/http/http_message.h"
+#include "net/layer7/http/http_io.h"
+#include "net/layer7/http/http_message.h"
 
 IHttpHandler::IHttpHandler() { entry = nullptr; }
 

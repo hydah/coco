@@ -6,8 +6,8 @@
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "net/layer4/coco_tcp.hpp"
-#include "net/layer7/coco_http.hpp"
-#include "net/layer7/coco_ws.hpp"
+#include "net/layer7/ws/coco_ws.hpp"
+#include "server/coco_http_server.hpp"
 #include "test_util.hpp"
 #include "utils/base64.hpp"
 #include "utils/sha1.hpp"
@@ -63,7 +63,6 @@ COTEST(HttpServerDeletedWhileAccepting) {
 
     HttpServer *server = new HttpServer(false);
     CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
-    CHECK_EQ(server->Start(), COCO_SUCCESS);
     CocoSleepMs(5);
 
     delete server;
@@ -82,7 +81,6 @@ COTEST(HttpServerDeletedWithOpenKeepAliveConn) {
 
     HttpServer *server = new HttpServer(false);
     CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
-    CHECK_EQ(server->Start(), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> client(DialTcp(kLoopback, port, kConnectTimeoutUs));
     CHECK(client != nullptr);
@@ -108,7 +106,6 @@ COTEST(HttpServerClosesNonKeepAliveConn) {
 
     HttpServer *server = new HttpServer(false);
     CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
-    CHECK_EQ(server->Start(), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> client(DialTcp(kLoopback, port, kConnectTimeoutUs));
     CHECK(client != nullptr);

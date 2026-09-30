@@ -4,7 +4,7 @@
 
 #include "http-parser/http_parser.h"
 
-#include "protocol/http/http_basic.h"
+#include "net/layer7/http/http_basic.h"
 #include "utils/utils.hpp"
 
 class HttpMuxEntry;

@@ -8,6 +8,9 @@
 
 int CoroutineHandler::GetCoroutineState() { return coroutine->pull(); };
 
+// ST thread-specific slot holding the CoCoroutine running on the current thread.
+static int _coroutine_key = -1;
+
 CoroutineContext *_st_context = new CoroutineContext();
 int CoroutineContext::generate_id() {
     static int id = 100;
@@ -171,10 +174,17 @@ int CoCoroutine::cycle() {
 void *CoCoroutine::coroutine_fun(void *arg) {
     CoCoroutine *p = (CoCoroutine *)arg;
 
+    if (_coroutine_key >= 0) {
+        st_thread_setspecific(_coroutine_key, p);
+    }
+
     int err = p->cycle();
 
     if (_st_context) {
         _st_context->clear_cid();
+    }
+    if (_coroutine_key >= 0) {
+        st_thread_setspecific(_coroutine_key, NULL);
     }
 
     if (err != COCO_SUCCESS) {
@@ -313,6 +323,13 @@ int CocoInit() {
         return ret;
     }
 
+    if (_coroutine_key < 0 && st_key_create(&_coroutine_key, NULL) != 0) {
+        _coroutine_key = -1;
+        ret = ERROR_ST_INITIALIZE;
+        coco_error("st_key_create failed. ret=%d", ret);
+        return ret;
+    }
+
     if (_st_context) {
         auto cid_ = _st_context->generate_id();
         _st_context->set_id(cid_);
@@ -331,3 +348,11 @@ void CocoLoopMs(uint64_t dur) {
 void CocoSleepMs(uint64_t durms) { st_usleep(durms * 1000); }
 void CocoSleep(uint32_t durs) { st_usleep(st_utime_t(durs) * 1000 * 1000); }
 int CocoGetCoroutineID() { return _st_context->get_id(); }
+
+bool CocoShouldStop() {
+    if (_coroutine_key < 0) {
+        return false;
+    }
+    CoCoroutine *c = (CoCoroutine *)st_thread_getspecific(_coroutine_key);
+    return c != NULL && c->pull() != COCO_SUCCESS;
+}

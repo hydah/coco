@@ -2,7 +2,7 @@
 #include <map>
 #include <sstream>
 
-#include "protocol/http/http_parser.h"
+#include "net/layer7/http/http_parser.h"
 #include "utils/utils.hpp"
 class HttpResponseReader;
 

@@ -1,51 +1,22 @@
-#include <iostream>
-#include <memory>
 #include <string>
-#include <vector>
 
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "net/coco_socket.hpp"
-#include "net/layer4/coco_tcp.hpp"
+#include "server/coco_tcp_server.hpp"
 
 using namespace std;
 
 string local_ip = "127.0.0.1";
 int port = 8080;
 
-class PingPongServer : public ConnRoutine {
-
-public:
-  PingPongServer(ConnManager *mgr, std::unique_ptr<TcpConn> conn);
-  virtual ~PingPongServer() = default;
-
-  virtual int DoCycle();
-  virtual std::string GetRemoteAddr() { return conn_->RemoteAddr(); };
-
-private:
-  std::unique_ptr<TcpConn> conn_;
-};
-
-PingPongServer::PingPongServer(ConnManager *mgr, std::unique_ptr<TcpConn> conn)
-    : ConnRoutine(mgr) {
-  conn_ = std::move(conn);
-}
-
-int PingPongServer::DoCycle() {
+// Echoes every read back to the peer until it closes or the server stops.
+int PingPong(StreamConn &conn) {
   char buf[1024];
   ssize_t nread = 0;
-  ssize_t nwrite = 0;
   int ret = COCO_SUCCESS;
-  while (true) {
-    ret = conn_->Read(buf, sizeof(buf), &nread);
-    if (ret != 0) {
-      coco_error("read error");
-      break;
-    }
-
-    ret = conn_->Write(buf, nread, &nwrite);
-    if (ret != 0) {
+  while ((ret = conn.Read(buf, sizeof(buf), &nread)) == COCO_SUCCESS) {
+    if ((ret = conn.Write(buf, nread, nullptr)) != COCO_SUCCESS) {
       coco_error("write error");
       break;
     }
@@ -53,63 +24,16 @@ int PingPongServer::DoCycle() {
   return ret;
 }
 
-class PingPongListener : public ListenRoutine {
-public:
-  PingPongListener(TcpListener *_l);
-  virtual ~PingPongListener();
-
-  virtual int Cycle();
-
-private:
-  TcpListener *l_;
-  ConnManager *manager_;
-};
-
-PingPongListener::PingPongListener(TcpListener *l) {
-  l_ = l;
-  manager_ = new ConnManager();
-}
-
-PingPongListener::~PingPongListener() {
-  Stop();
-  if (manager_) {
-    delete manager_;
-    manager_ = nullptr;
-  }
-  if (l_) {
-    delete l_;
-    l_ = nullptr;
-  }
-}
-
-int PingPongListener::Cycle() {
-  while (!ShouldTermCycle()) {
-    TcpConn *conn = l_->Accept();
-    if (conn == nullptr) {
-      continue;
-    }
-    PingPongServer *pserver = new PingPongServer(manager_, std::unique_ptr<TcpConn>(conn));
-    if (pserver->Start() != COCO_SUCCESS) {
-      delete pserver;
-    }
-  }
-  return 0;
-}
-
 int main() {
   log_level = log_dbg;
   CocoInit();
 
-  TcpListener *l = ListenTcp(local_ip, port);
-  if (l == NULL) {
+  TcpServer server(PingPong);
+  if (server.ListenAndServe(local_ip, port) != COCO_SUCCESS) {
     coco_error("create listen socket failed");
     return -1;
   }
-  PingPongListener *pl = new PingPongListener(l);
-  pl->Start();
 
   CocoLoopMs(1000);
-
-  delete pl;
   return 0;
 }

@@ -9,5 +9,5 @@
 #     )
 
 add_executable(ws_client ws_client.cpp)
-target_link_libraries(ws_client coco ssl crypto dl)
+target_link_libraries(ws_client coco dl)
 install(TARGETS ws_client RUNTIME DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/websocket/)

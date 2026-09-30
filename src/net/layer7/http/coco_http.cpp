@@ -1,4 +1,4 @@
-#include "net/layer7/coco_http.hpp"
+#include "net/layer7/http/coco_http.hpp"
 
 #include <assert.h>
 #include <netdb.h>
@@ -10,35 +10,13 @@
 #include "log/log.hpp"
 #include "net/coco_socket.hpp"
 
-/* HttpServerConn */
-HttpServerConn::HttpServerConn(ConnManager *mgr, TcpConn *conn, HttpServeMux *mux)
-    : ConnRoutine(mgr) {
-    conn_ = conn;
-    _mux = mux;
-    https_ = false;
-}
-
-HttpServerConn::HttpServerConn(ConnManager *mgr, SslServer *conn, HttpServeMux *mux)
-    : ConnRoutine(mgr) {
-    conn_ = conn;
-    _mux = mux;
-    https_ = true;
-}
-
-HttpServerConn::~HttpServerConn() {
-    coco_info("destruct httpserver conn");
-    coco_freep(conn_);
-    coco_freep(http_msg_);
-}
-
-int HttpServerConn::ProcessRequest(HttpResponseWriter *w, HttpMessage *r) {
+static int ProcessRequest(HttpServeMux *mux, HttpResponseWriter *w, HttpMessage *r) {
     int ret = COCO_SUCCESS;
 
     coco_trace("HTTP %s %s, content-length=%ld", r->method_str().c_str(), r->url().c_str(),
                r->content_length());
 
-    // use default server mux to serve http request.
-    if ((ret = _mux->serve_http(w, r)) != COCO_SUCCESS) {
+    if ((ret = mux->serve_http(w, r)) != COCO_SUCCESS) {
         if (!coco_is_client_gracefully_close(ret)) {
             coco_error("serve http msg failed. ret=%d", ret);
         }
@@ -47,50 +25,36 @@ int HttpServerConn::ProcessRequest(HttpResponseWriter *w, HttpMessage *r) {
     return ret;
 }
 
-int HttpServerConn::DoCycle() {
+int ServeHttpConn(StreamConn &conn, HttpServeMux *mux) {
     int ret = COCO_SUCCESS;
 
-    conn_->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
-
-    if (https_) {
-        // ssl handshake
-        SslServer *ssl = reinterpret_cast<SslServer *>(conn_);
-        ret = ssl->Handshake("./server.key", "./server.crt");
-        if (ret != COCO_SUCCESS) {
-            coco_error("ssl handshake failed");
-            return ret;
-        }
-    }
+    conn.SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
 
     // process http messages.
-    while (!ShouldTermCycle()) {
-        // coco_freep(http_msg_);
-        if (http_msg_ != nullptr) {
-            delete http_msg_;
-        }
-        http_msg_ = new HttpMessage();
+    while (!CocoShouldStop()) {
+        std::unique_ptr<HttpMessage> msg(new HttpMessage());
 
         // initialize parser
-        if ((ret = http_msg_->Initialize(HTTP_REQUEST)) != COCO_SUCCESS) {
+        if ((ret = msg->Initialize(HTTP_REQUEST)) != COCO_SUCCESS) {
             coco_error("api initialize http parser failed. ret=%d", ret);
             return ret;
         }
         // get a http message
-        if ((ret = http_msg_->Parse(conn_, this)) != COCO_SUCCESS) {
+        if ((ret = msg->Parse(&conn, &conn)) != COCO_SUCCESS) {
             return ret;
         }
 
         // ok, handle http request.
-        HttpResponseWriter writer(conn_);
-        if ((ret = ProcessRequest(&writer, http_msg_)) != COCO_SUCCESS) {
+        HttpResponseWriter writer(&conn);
+        if ((ret = ProcessRequest(mux, &writer, msg.get())) != COCO_SUCCESS) {
             return ret;
         }
 
         // read all rest bytes in request body. A request with neither Content-Length nor
         // chunked encoding has no body; the reader would otherwise read until the peer closes.
         char buf[HTTP_READ_CACHE_BYTES];
-        HttpResponseReader *br = http_msg_->body_reader();
-        bool has_body = http_msg_->is_chunked() || http_msg_->content_length() > 0;
+        HttpResponseReader *br = msg->body_reader();
+        bool has_body = msg->is_chunked() || msg->content_length() > 0;
         while (has_body && !br->eof()) {
             if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, nullptr)) != COCO_SUCCESS) {
                 return ret;
@@ -98,78 +62,12 @@ int HttpServerConn::DoCycle() {
         }
 
         // donot keep alive, disconnect it.
-        if (!http_msg_->is_keep_alive()) {
+        if (!msg->is_keep_alive()) {
             break;
         }
     }
 
     return ret;
-}
-
-/* HttpServer */
-HttpServer::HttpServer(bool https) {
-    _l = nullptr;
-    _mux = nullptr;
-    https_ = https;
-    manager = new ConnManager();
-}
-
-HttpServer::~HttpServer() {
-    // Stop accepting before the listener goes away, and let the connections exit
-    // before the mux they serve with.
-    Stop();
-    if (manager) {
-        delete manager;
-        manager = nullptr;
-    }
-    if (_l) {
-        delete _l;
-        _l = nullptr;
-    }
-}
-
-int HttpServer::ListenAndServe(std::string local_ip, int local_port, HttpServeMux *mux) {
-    _l = ListenTcp(local_ip, local_port);
-    if (_l == nullptr) {
-        coco_error("create http listen socket failed");
-        return -1;
-    }
-    _mux = mux;
-    return 0;
-}
-
-int HttpServer::Serve(TcpListener *l, HttpServeMux *mux) {
-    _l = l;
-    _mux = mux;
-
-    return 0;
-}
-
-int HttpServer::Cycle() {
-    while (!ShouldTermCycle()) {
-        TcpConn *conn_ = _l->Accept();
-        if (conn_ == nullptr) {
-            if (ShouldTermCycle()) {
-                break;
-            }
-            // Accept can keep failing (e.g. EMFILE) without ever blocking.
-            coco_error("get null conn");
-            CocoSleepMs(10);
-            continue;
-        }
-        HttpServerConn *conn = nullptr;
-        if (https_) {
-            auto ssl = new SslServer(conn_->GetStfd(), conn_);
-            conn = new HttpServerConn(manager, ssl, _mux);
-        } else {
-            conn = new HttpServerConn(manager, conn_, _mux);
-        }
-
-        if (conn->Start() != COCO_SUCCESS) {
-            delete conn;
-        }
-    }
-    return 0;
 }
 
 HttpClient::~HttpClient() {

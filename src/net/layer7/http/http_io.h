@@ -3,8 +3,8 @@
 
 #include "http_parser.h"
 
-#include "protocol/http/http_basic.h"
-#include "protocol/http/http_message.h"
+#include "net/layer7/http/http_basic.h"
+#include "net/layer7/http/http_message.h"
 #include "utils/utils.hpp"
 
 class HttpResponseWriter {

@@ -1,11 +1,11 @@
-#include "protocol/http/http_parser.h"
+#include "net/layer7/http/http_parser.h"
 
 #include <assert.h>
 #include <string.h>
 
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "protocol/http/http_io.h"
+#include "net/layer7/http/http_io.h"
 
 HttpUri::HttpUri() { port = DEFAULT_HTTP_PORT; }
 

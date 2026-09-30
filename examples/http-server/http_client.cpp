@@ -5,7 +5,7 @@
 #include "common/error.hpp"
 #include "log/log.hpp"
 #include "net/coco_socket.hpp"
-#include "net/layer7/coco_http.hpp"
+#include "net/layer7/http/coco_http.hpp"
 
 using namespace std;
 

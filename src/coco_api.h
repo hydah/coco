@@ -17,3 +17,6 @@ int CocoGetCoroutineID();
 void CocoLoopMs(uint64_t dur);
 void CocoSleepMs(uint64_t durms);
 void CocoSleep(uint32_t durs);
+// True once the coroutine running this code has been stopped or interrupted. Lets a
+// plain function (e.g. a TcpServer handler) exit a loop that does no blocking I/O.
+bool CocoShouldStop();
