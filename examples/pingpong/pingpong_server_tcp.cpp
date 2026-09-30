@@ -71,24 +71,27 @@ PingPongListener::PingPongListener(TcpListener *l) {
 }
 
 PingPongListener::~PingPongListener() {
-  if (l_) {
-    delete l_;
-    l_ = nullptr;
-  }
-
+  Stop();
   if (manager_) {
     delete manager_;
     manager_ = nullptr;
   }
+  if (l_) {
+    delete l_;
+    l_ = nullptr;
+  }
 }
 
 int PingPongListener::Cycle() {
-  while (true) {
-    std::unique_ptr<TcpConn> p;
+  while (!ShouldTermCycle()) {
     TcpConn *conn = l_->Accept();
-    p.reset(conn);
-    PingPongServer *pserver = new PingPongServer(manager_, std::move(p));
-    pserver->Start();
+    if (conn == nullptr) {
+      continue;
+    }
+    PingPongServer *pserver = new PingPongServer(manager_, std::unique_ptr<TcpConn>(conn));
+    if (pserver->Start() != COCO_SUCCESS) {
+      delete pserver;
+    }
   }
   return 0;
 }

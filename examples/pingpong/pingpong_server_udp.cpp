@@ -29,6 +29,7 @@ private:
 PingPongListener::PingPongListener(UdpListener *l) { l_ = l; }
 
 PingPongListener::~PingPongListener() {
+  Stop();
   if (l_) {
     delete l_;
     l_ = nullptr;
@@ -42,8 +43,11 @@ int PingPongListener::Cycle() {
   struct sockaddr_in addr;
   int len = 2048;
   int ret = 0;
-  while (true) {
+  while (!ShouldTermCycle()) {
     ret = l_->RecvFrom(buf, len, &nread, (struct sockaddr *)&addr, &len);
+    if (ret != COCO_SUCCESS) {
+      continue;
+    }
     buf[nread] = '\0';
     coco_trace("read from: %s, size: %d, buf: %s", GetRemoteAddr(addr).c_str(), int(nread), buf);
     l_->SendTo(buf, (int)nread, &nwrite, (struct sockaddr *)&addr, len);

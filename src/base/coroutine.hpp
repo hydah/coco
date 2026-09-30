@@ -46,9 +46,15 @@ class CoCoroutine {
     ~CoCoroutine();
 
     void set_stack_size(int v);
+    // A detached coroutine cannot be joined; when the handler's Cycle() returns, the
+    // coroutine deletes the handler (and with it this object) on its own stack.
+    void set_detached(bool v) { detached_ = v; }
     int32_t start();
+    // Interrupts the coroutine and, unless it is detached or the caller is the coroutine
+    // itself, waits for it to exit.
     void stop();
     void interrupt();
+    bool running() { return started && !cycle_done; }
     // 在handler cycle中，如果发现 coroutine err了，要退出cycle
     inline int32_t pull() { return trd_err_; }
     int32_t get_cid();
@@ -68,8 +74,11 @@ class CoCoroutine {
     bool interrupted;
     bool disposed;
     bool cycle_done;
+    bool detached_ = false;
 };
 
+// Owned by the caller. Derived destructors must call Stop() before freeing anything
+// Cycle() uses: the base destructor runs after they are gone.
 class ListenRoutine : public CoroutineHandler {
  public:
     ListenRoutine();
@@ -77,16 +86,22 @@ class ListenRoutine : public CoroutineHandler {
 
     virtual int Cycle() = 0;
     virtual int Start();
+    // Interrupts Cycle() and waits for it to return.
+    virtual void Stop();
 };
 
+// Owns itself once Start() succeeds: the object is deleted by its own coroutine right
+// after Cycle() returns. Other code must not delete a started connection, and must not
+// keep a pointer to it past its destructor.
 class ConnRoutine : public CoroutineHandler {
  public:
     ConnRoutine(ConnManager *manager);
     virtual ~ConnRoutine();
 
-    // virtual void dispose();
+    // Registers with the manager on success. On failure the caller still owns the object.
     virtual int Start();
     virtual int Cycle();
+    // Interrupts the connection without waiting; it deletes itself when DoCycle() returns.
     virtual void Stop();
     virtual std::string GetRemoteAddr() = 0;
 

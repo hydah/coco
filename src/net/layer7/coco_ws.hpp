@@ -131,7 +131,10 @@ class WebSocketClient {
      */
     int Start(bool is_wss, const std::string &host, uint16_t port, std::string path,
               uint64_t timeout_us = WS_CLIENT_TIMEOUT_US);
+    // Interrupts the connection without waiting for it to exit.
     int Stop();
+    // Called by the connection's destructor; the client drops its pointer to it.
+    void OnConnClosed(WebSocketConn *conn);
 
     void SetMessageHandler(WebsocketMessageHandler handler) { message_handler_ = handler; }
     int HandleMessage(std::unique_ptr<WebSocektMessage> msg);

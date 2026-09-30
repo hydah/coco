@@ -1,6 +1,7 @@
 #include "base/coroutine.hpp"
 
 #include <assert.h>
+#include <errno.h>
 
 #include "coco_api.h"
 #include "log/log.hpp"
@@ -65,10 +66,9 @@ CoCoroutine::CoCoroutine(std::string n, CoroutineHandler *h, int32_t cid) {
 }
 
 CoCoroutine::~CoCoroutine() {
+    // A detached coroutine is only freed by itself, after its cycle has returned.
+    assert(!detached_ || !running());
     stop();
-
-    // TODO: FIXME: We must assert the cycle is done.
-    // srs_freep(trd_err);
 }
 
 void CoCoroutine::set_stack_size(int v) { stack_size = v; }
@@ -91,7 +91,7 @@ int32_t CoCoroutine::start() {
         return ERROR_THREAD_DISPOSED;
     }
 
-    if ((trd_ = st_thread_create(coroutine_fun, this, 1, stack_size)) == NULL) {
+    if ((trd_ = st_thread_create(coroutine_fun, this, detached_ ? 0 : 1, stack_size)) == NULL) {
         ret = ERROR_ST_CREATE_CYCLE_THREAD;
         coco_error("StCoroutine st_coroutine_create failed. ret=%d", ret);
         return ret;
@@ -106,22 +106,25 @@ void CoCoroutine::stop() {
         return;
     }
 
+    // ST refuses to join the calling thread; the coroutine only needs to see the interrupt.
+    if (trd_ && trd_ == st_thread_self()) {
+        interrupt();
+        return;
+    }
+
     disposed = true;
 
     interrupt();
 
     // When not started, the trd is NULL.
-    if (trd_) {
-        void *res = NULL;
-        int ret = st_thread_join((st_thread_t)trd_, &res);
-        coco_trace("join ret is %d", ret);
-        // assert(ret);
-
-        int err_res = *(int *)res;
-        if (err_res != COCO_SUCCESS) {
-            // When worker cycle done, the error has already been overrided,
-            // so the trd_err should be equal to err_res.
-            assert(trd_err_ == err_res);
+    if (trd_ && !detached_) {
+        // The join fails with EINTR if the caller itself is interrupted while waiting;
+        // returning early would free this object under a still running coroutine.
+        while (st_thread_join((st_thread_t)trd_, NULL) != 0) {
+            if (errno != EINTR) {
+                coco_error("join coroutine %s failed. errno=%d", name.c_str(), errno);
+                break;
+            }
         }
     }
 
@@ -162,9 +165,6 @@ int CoCoroutine::cycle() {
         return err;
     }
 
-    // Set cycle done, no need to interrupt it.
-    cycle_done = true;
-
     return ret;
 }
 
@@ -180,8 +180,16 @@ void *CoCoroutine::coroutine_fun(void *arg) {
     if (err != COCO_SUCCESS) {
         p->trd_err_ = err;
     }
+    // Set cycle done, no need to interrupt it.
+    p->cycle_done = true;
 
-    return &p->trd_err_;
+    if (p->detached_) {
+        // ST releases this stack only after the function returns, so the handler's
+        // destructor may still run (and even yield) on it.
+        delete p->handler;
+    }
+
+    return NULL;
 }
 
 #define SERVER_LISTEN_BACKLOG 512
@@ -189,33 +197,35 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 ListenRoutine::ListenRoutine() { coroutine = new CoCoroutine("listen", this); }
 
 ListenRoutine::~ListenRoutine() {
-    coroutine->stop();
-    if (coroutine) {
-        delete coroutine;
-    }
+    Stop();
+    delete coroutine;
 }
 
 int ListenRoutine::Start() { return coroutine->start(); }
+void ListenRoutine::Stop() { coroutine->stop(); }
 
 ConnRoutine::ConnRoutine(ConnManager *manager) {
-    coroutine = new CoCoroutine("conn", this);
-
     assert(manager != nullptr);
     manager_ = manager;
-    // 由外部添加
-    manager_->Push(this);
+    coroutine = new CoCoroutine("conn", this);
+    coroutine->set_detached(true);
 }
 
 ConnRoutine::~ConnRoutine() {
-    coroutine->interrupt();
-
-    if (coroutine != NULL) {
-        delete coroutine;
-    }
+    delete coroutine;
+    // Last use of the manager: a waiting Shutdown() may free it once this conn yields.
+    manager_->Remove(this);
 }
 
-int ConnRoutine::Start() { return coroutine->start(); }
-void ConnRoutine::Stop() { coroutine->stop(); }
+int ConnRoutine::Start() {
+    int ret = coroutine->start();
+    if (ret == COCO_SUCCESS) {
+        manager_->Push(this);
+    }
+    return ret;
+}
+
+void ConnRoutine::Stop() { coroutine->interrupt(); }
 
 int ConnRoutine::Cycle() {
     coco_trace("[TRACE_ANCHOR] Connection, remote addr: %s", GetRemoteAddr().c_str());
@@ -239,8 +249,6 @@ int ConnRoutine::Cycle() {
         coco_warn("client disconnect peer. ret=%d", ret);
     }
 
-    // 销毁这个conn 对象
-    manager_->Remove(this);
     return COCO_SUCCESS;
 }
 

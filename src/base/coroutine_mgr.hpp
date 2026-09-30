@@ -1,30 +1,29 @@
 #pragma once
-#include <vector>
+#include <stddef.h>
+
+#include <unordered_set>
 
 #include "st.h"
 
 class ConnRoutine;
 
-// Owns connection routines. A finished connection cannot free itself (it is
-// still running on its own stack), so Remove() hands it to a cleanup coroutine
-// which deletes it, and thereby closes its socket, right after it exits.
+// Tracks the running connection routines. It never frees them: a connection deletes
+// itself when its coroutine exits and unregisters from its destructor. The manager
+// must outlive every connection registered with it.
 class ConnManager {
  public:
     ConnManager() = default;
+    // Shuts down the remaining connections first.
     virtual ~ConnManager();
 
     virtual void Push(ConnRoutine *conn);
     virtual void Remove(ConnRoutine *conn);
-    virtual void Destroy();
+    // Interrupts every connection and waits until all of them have exited. Must not be
+    // called from one of those connections, which would wait for itself.
+    virtual void Shutdown();
+    size_t Size() const { return conns.size(); }
 
  private:
-    static void *CleanupLoop(void *arg);
-
-    std::vector<ConnRoutine *> conns;
-    std::vector<ConnRoutine *> zombies;
-
-    // Created lazily in Remove(), which always runs inside a coroutine.
+    std::unordered_set<ConnRoutine *> conns;
     st_cond_t cond_ = nullptr;
-    st_thread_t cleanup_trd_ = nullptr;
-    bool quit_ = false;
 };

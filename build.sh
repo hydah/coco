@@ -402,8 +402,10 @@ build_project() {
 run_tests() {
     if [ "$RUN_TESTS" = true ]; then
         echo -e "${BLUE}Running tests...${NC}"
-        # Add test execution here when tests are available
-        echo -e "${YELLOW}No tests configured yet${NC}"
+        if ! ctest --output-on-failure; then
+            echo -e "${RED}Tests failed${NC}"
+            exit 1
+        fi
     fi
 }
 

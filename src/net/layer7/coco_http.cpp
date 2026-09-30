@@ -86,10 +86,12 @@ int HttpServerConn::DoCycle() {
             return ret;
         }
 
-        // read all rest bytes in request body.
+        // read all rest bytes in request body. A request with neither Content-Length nor
+        // chunked encoding has no body; the reader would otherwise read until the peer closes.
         char buf[HTTP_READ_CACHE_BYTES];
         HttpResponseReader *br = http_msg_->body_reader();
-        while (!br->eof()) {
+        bool has_body = http_msg_->is_chunked() || http_msg_->content_length() > 0;
+        while (has_body && !br->eof()) {
             if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, nullptr)) != COCO_SUCCESS) {
                 return ret;
             }
@@ -113,13 +115,16 @@ HttpServer::HttpServer(bool https) {
 }
 
 HttpServer::~HttpServer() {
-    if (_l) {
-        delete _l;
-        _l = nullptr;
-    }
+    // Stop accepting before the listener goes away, and let the connections exit
+    // before the mux they serve with.
+    Stop();
     if (manager) {
         delete manager;
         manager = nullptr;
+    }
+    if (_l) {
+        delete _l;
+        _l = nullptr;
     }
 }
 
@@ -141,10 +146,15 @@ int HttpServer::Serve(TcpListener *l, HttpServeMux *mux) {
 }
 
 int HttpServer::Cycle() {
-    while (true) {
+    while (!ShouldTermCycle()) {
         TcpConn *conn_ = _l->Accept();
         if (conn_ == nullptr) {
+            if (ShouldTermCycle()) {
+                break;
+            }
+            // Accept can keep failing (e.g. EMFILE) without ever blocking.
             coco_error("get null conn");
+            CocoSleepMs(10);
             continue;
         }
         HttpServerConn *conn = nullptr;
@@ -155,7 +165,9 @@ int HttpServer::Cycle() {
             conn = new HttpServerConn(manager, conn_, _mux);
         }
 
-        conn->Start();
+        if (conn->Start() != COCO_SUCCESS) {
+            delete conn;
+        }
     }
     return 0;
 }

@@ -42,6 +42,9 @@ WebSocketConn::WebSocketConn(void *observer, ConnManager *mgr, StreamConn *conn,
 
 WebSocketConn::~WebSocketConn() {
     coco_info("destruct websocket conn");
+    if (observer_) {
+        ((WebSocketClient *)observer_)->OnConnClosed(this);
+    }
     coco_freep(conn_);
     coco_freep(http_msg_);
 }
@@ -328,7 +331,16 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
 
     conn_ = new WebSocketConn(this, manager_, http_client_->GetUnderlayerConn(), ws_http_msg_);
 
-    return conn_->Start();
+    if ((ret = conn_->Start()) != COCO_SUCCESS) {
+        delete conn_;
+    }
+    return ret;
+}
+
+void WebSocketClient::OnConnClosed(WebSocketConn *conn) {
+    if (conn_ == conn) {
+        conn_ = nullptr;
+    }
 }
 
 int WebSocketClient::Stop() {

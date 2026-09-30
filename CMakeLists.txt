@@ -12,7 +12,9 @@ endif()
 # only build examples if this is the main project
 if(CMAKE_PROJECT_NAME STREQUAL "coco")
   option(COCO_BUILD_EXAMPLES "Build coco examples" ON)
+  option(COCO_BUILD_TESTS "Build coco tests" ON)
 endif()
+option(COCO_ENABLE_ASAN "Build with AddressSanitizer" OFF)
 
 # Platform detection and configuration
 if(APPLE)
@@ -46,6 +48,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   list(APPEND CXX_FLAGS "-Wthread-safety")
   list(REMOVE_ITEM CXX_FLAGS "-rdynamic")
 endif()
+if(COCO_ENABLE_ASAN)
+  list(APPEND CXX_FLAGS "-fsanitize=address" "-fno-omit-frame-pointer")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+endif()
 string(REPLACE ";" " " CMAKE_CXX_FLAGS "${CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
@@ -74,4 +80,9 @@ add_subdirectory(src)
 # coco example
 if(COCO_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(COCO_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
 endif()
