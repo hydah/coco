@@ -7,11 +7,25 @@
 #include <algorithm>
 
 ConnManager::~ConnManager() {
+    if (cleanup_trd_) {
+        quit_ = true;
+        st_thread_interrupt(cleanup_trd_);
+        st_thread_join(cleanup_trd_, NULL);
+        cleanup_trd_ = nullptr;
+    }
+
+    Destroy();
+
     for (auto conn : conns) {
         if (conn != nullptr) {
             delete conn;
-            conn = nullptr;
         }
+    }
+    conns.clear();
+
+    if (cond_) {
+        st_cond_destroy(cond_);
+        cond_ = nullptr;
     }
 }
 
@@ -33,13 +47,43 @@ void ConnManager::Remove(ConnRoutine *conn) {
     conns.erase(it);
     coco_info("conn removed. conns=%d", (int)conns.size());
     zombies.push_back(conn);
+
+    if (!cleanup_trd_) {
+        cond_ = st_cond_new();
+        cleanup_trd_ = st_thread_create(CleanupLoop, this, 1, 0);
+        if (!cleanup_trd_) {
+            coco_error("create conn cleanup coroutine failed");
+            return;
+        }
+    }
+    st_cond_signal(cond_);
 }
 
 void ConnManager::Destroy() {
-    for (auto conn : zombies) {
+    // Deleting a conn joins its coroutine and may yield, so detach the list
+    // first to keep a concurrent Destroy() from freeing the same conn twice.
+    std::vector<ConnRoutine *> dead;
+    dead.swap(zombies);
+
+    for (auto conn : dead) {
         if (conn) {
             delete conn;
         }
     }
-    zombies.clear();
+}
+
+void *ConnManager::CleanupLoop(void *arg) {
+    ConnManager *mgr = (ConnManager *)arg;
+    while (!mgr->quit_) {
+        // A signal sent while we were busy in Destroy() is lost, so only wait
+        // when there is really nothing to clean up.
+        if (mgr->zombies.empty()) {
+            st_cond_wait(mgr->cond_);
+        }
+        if (mgr->quit_) {
+            break;
+        }
+        mgr->Destroy();
+    }
+    return NULL;
 }

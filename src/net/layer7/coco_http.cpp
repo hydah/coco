@@ -142,8 +142,6 @@ int HttpServer::Serve(TcpListener *l, HttpServeMux *mux) {
 
 int HttpServer::Cycle() {
     while (true) {
-        manager->Destroy();
-
         TcpConn *conn_ = _l->Accept();
         if (conn_ == nullptr) {
             coco_error("get null conn");

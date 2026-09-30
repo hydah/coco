@@ -84,8 +84,6 @@ PingPongListener::~PingPongListener() {
 
 int PingPongListener::Cycle() {
   while (true) {
-    manager_->Destroy();
-
     std::unique_ptr<TcpConn> p;
     TcpConn *conn = l_->Accept();
     p.reset(conn);
