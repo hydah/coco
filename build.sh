@@ -453,10 +453,12 @@ show_summary() {
 
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}Build completed successfully!${NC}"
-    echo -e "${YELLOW}To run examples:${NC}"
-    echo -e "  cd build"
-    echo -e "  ./bin/pingpong_server_tcp 8080"
-    echo -e "  ./bin/http_server 8080"
+    if [ "$BUILD_EXAMPLES" = true ]; then
+        echo -e "${YELLOW}To run examples (addresses are hardcoded):${NC}"
+        echo -e "  ./build/bin/pingpong_server_tcp    # 127.0.0.1:8080"
+        echo -e "  ./build/bin/pingpong_client_tcp"
+        echo -e "  cd examples/http-server && ../../build/bin/http_server    # https, 0.0.0.0:9082"
+    fi
     echo -e "${GREEN}========================================${NC}"
 }
 
