@@ -3,3 +3,4 @@ st/LINUX*
 build/
 lib/
 thirdparty/temp
+thirdparty/openssl-*.tar.gz

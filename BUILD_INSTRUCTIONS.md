@@ -196,7 +196,7 @@ After successful build, you'll find:
 ### Libraries
 - `lib/libcoco.a` - Main Coco library
 - `lib/libst.a` - State threads library
-- `lib/libssl.a`, `lib/libcrypto.a` - OpenSSL libraries (built from source)
+- `thirdparty/temp/out_libs/openssl-<version>/lib/libssl.a`, `libcrypto.a` - OpenSSL libraries (built from source)
 
 ### Examples
 - `bin/pingpong_server_tcp` - TCP echo server
@@ -253,7 +253,9 @@ st_set_eventsys to epoll
    - Check logs in `build/` directory
 
 4. **OpenSSL issues**
-   - The build script automatically builds OpenSSL from source
+   - OpenSSL (version pinned in `cmake/openssl.cmake`, currently 3.5 LTS) is built from source as a static library
+   - The source tarball is downloaded from GitHub and verified by SHA256 on the first build
+   - For offline builds, put `openssl-<version>.tar.gz` into `thirdparty/` beforehand; it is used instead of downloading
    - Ensure no conflicting OpenSSL installations
 
 5. **Architecture issues**
