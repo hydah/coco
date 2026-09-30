@@ -43,6 +43,7 @@ make -j$(sysctl -n hw.ncpu)  # macOS
 
 - **[Build Instructions](BUILD_INSTRUCTIONS.md)** - Comprehensive build guide for all platforms
 - **[Project Analysis](PROJECT_ANALYSIS.md)** - Detailed architecture and design analysis
+- **[设计文档](docs/README.md)** - 协程与连接管理、TLS 握手流程
 
 ## Examples
 
