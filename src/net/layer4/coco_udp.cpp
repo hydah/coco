@@ -13,6 +13,7 @@
 UdpConn::UdpConn(st_netfd_t stfd) : DatagramConn(stfd) {}
 
 UdpConn::UdpConn(st_netfd_t stfd, struct sockaddr &addr, socklen_t len) : DatagramConn(stfd) {
+    assert(len <= sizeof(dst_addr));
     memcpy(&dst_addr, &addr, len);
     dst_addr_len = len;
 }
@@ -153,12 +154,15 @@ UdpConn *DialUdp(std::string dst_ip, int dst_port, int timeout) {
 
     conn = new UdpConn(stfd, *result->ai_addr, result->ai_addrlen);
     conn->SetSendTimeout(timeout);
+    freeaddrinfo(result);
     return conn;
 
 failed:
     if (stfd) {
         // we must ensure the close is ok.
-        assert(st_netfd_close(stfd) != -1);
+        int r0 = st_netfd_close(stfd);
+        assert(r0 != -1);
+        (void)r0;
         stfd = NULL;
     }
     freeaddrinfo(result);

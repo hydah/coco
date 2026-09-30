@@ -157,7 +157,10 @@ int SslServer::Handshake(std::string key_file, std::string crt_file) {
     coco_info("ssl v1.1.1");
 #endif
     SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-    assert(SSL_CTX_set_cipher_list(ssl_ctx, "ALL") == 1);
+    if (SSL_CTX_set_cipher_list(ssl_ctx, "ALL") != 1) {
+        coco_error("SSL_CTX_set_cipher_list");
+        return ERROR_HTTPS_HANDSHAKE;
+    }
 
     // TODO: Setup callback, see SSL_set_ex_data and SSL_set_info_callback
     if ((ssl = SSL_new(ssl_ctx)) == NULL) {
@@ -331,7 +334,10 @@ int SslClient::Handshake() {
     coco_info("ssl v1.1.1");
 #endif
     SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
-    assert(SSL_CTX_set_cipher_list(ssl_ctx, "ALL") == 1);
+    if (SSL_CTX_set_cipher_list(ssl_ctx, "ALL") != 1) {
+        coco_error("SSL_CTX_set_cipher_list");
+        return ERROR_HTTPS_HANDSHAKE;
+    }
 
     // TODO: Setup callback, see SSL_set_ex_data and SSL_set_info_callback
     if ((ssl = SSL_new(ssl_ctx)) == NULL) {

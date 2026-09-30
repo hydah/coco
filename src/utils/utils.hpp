@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <sys/uio.h>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>

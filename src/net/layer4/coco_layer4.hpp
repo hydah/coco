@@ -15,15 +15,17 @@ class Layer4Conn {
     virtual ~Layer4Conn() {
         coco_dbg("destruct layer4conn");
         if (skt_) {
-            coco_dbg("free skt_");
-            free(skt_);
+            coco_dbg("delete skt_");
+            delete skt_;
             skt_ = nullptr;
         }
 
         if (stfd_) {
             coco_dbg("close stfd");
             // we must ensure the close is ok.
-            assert(st_netfd_close(stfd_) != -1);
+            int r0 = st_netfd_close(stfd_);
+            assert(r0 != -1);
+            (void)r0;
             stfd_ = NULL;
         }
     }
@@ -32,7 +34,7 @@ class Layer4Conn {
         stfd_ = nullptr;
         if (skt_) {
             coco_dbg("free skt_");
-            free(skt_);
+            delete skt_;
             skt_ = nullptr;
         }
     }

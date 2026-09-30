@@ -183,12 +183,15 @@ TcpConn *DialTcp(std::string dst_ip, int dst_port, int timeout) {
 
     coco_info("connect ok. server=%s, ip=%s, port=%d", ip.c_str(), ip_c, dst_port);
 
+    freeaddrinfo(result);
     return new TcpConn(stfd);
 
 failed:
     if (stfd) {
         // we must ensure the close is ok.
-        assert(st_netfd_close(stfd) != -1);
+        int r0 = st_netfd_close(stfd);
+        assert(r0 != -1);
+        (void)r0;
         stfd = NULL;
     }
     freeaddrinfo(result);
