@@ -23,9 +23,8 @@ cd coco
 chmod +x build.sh
 ./build.sh
 
-# Run an example
-cd build
-./bin/pingpong_server_tcp 8080
+# Run an example (port is hardcoded to 8080)
+./build/bin/pingpong_server_tcp
 ```
 
 ### Manual Build
@@ -41,25 +40,24 @@ make -j$(sysctl -n hw.ncpu)  # macOS
 
 ## Documentation
 
-- **[Build Instructions](BUILD_INSTRUCTIONS.md)** - Comprehensive build guide for all platforms
-- **[Project Analysis](PROJECT_ANALYSIS.md)** - Detailed architecture and design analysis
-- **[设计文档](docs/README.md)** - 协程与连接管理、TLS 握手流程
+- **[构建](docs/build.md)**
+- **[架构](docs/architecture.md)**
+- **[协程与连接管理](docs/coroutine.md)**
+- **[TLS 握手与读写](docs/tls.md)**
 
 ## Examples
 
-After building, you can run various examples:
+Ports and addresses are hardcoded in each example. HTTPS reads `./server.key` and `./server.crt` from the working directory.
 
 ```bash
-cd build
+# TCP echo, 127.0.0.1:8080
+./build/bin/pingpong_server_tcp
+./build/bin/pingpong_client_tcp
 
-# TCP echo server
-./bin/pingpong_server_tcp 8080
-
-# HTTP server
-./bin/http_server 8080
-
-# WebSocket client
-./bin/ws_client ws://echo.websocket.org
+# HTTPS, run from examples/http-server so the certificate is found
+cd examples/http-server
+../../build/bin/http_server
+../../build/bin/http_client
 ```
 
 ## Platform Support
@@ -73,11 +71,12 @@ The library automatically detects and uses the optimal event system:
 
 ## Dependencies
 
-- CMake (≥ 3.1)
+- CMake (≥ 3.5)
 - C++11 compatible compiler
 - Git (for submodules)
+- Perl (OpenSSL's configure script)
 
-See [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md) for detailed dependency installation.
+See [docs/build.md](docs/build.md) for dependency installation and build options.
 
 ## License
 
