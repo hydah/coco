@@ -72,7 +72,7 @@ Linux 上事件系统是 epoll，OpenSSL 用上游的 `./config` 探测本机。
 
 ## 测试
 
-测试在 `tests/`，不依赖外部测试框架。ctest 把每个用例注册成单独的进程，超时 10 秒，所以一个用例崩溃或卡住只会算在它自己头上。用例会在 `127.0.0.1` 上监听 19181–19203 端口。
+测试在 `tests/`，不依赖外部测试框架。ctest 把每个用例注册成单独的进程，超时 10 秒，所以一个用例崩溃或卡住只会算在它自己头上。用例会在 `127.0.0.1` 上监听 19181–19212 端口。
 
 `LayerDependencies` 不是 C++ 用例，它用 `cmake -P` 运行 `cmake/check_layers.cmake`，检查 `src/` 下没有向上层的 include。也可以单独跑：`cmake -DSRC_DIR=src -P cmake/check_layers.cmake`。
 

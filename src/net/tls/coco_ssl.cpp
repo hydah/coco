@@ -12,6 +12,7 @@ SslConn::SslConn(st_netfd_t _stfd, StreamConn* under_layer) : StreamConn(_stfd) 
 
     ssl_ctx = NULL;
     ssl = NULL;
+    flush_lock_ = st_mutex_new();
 }
 
 SslConn::~SslConn() {
@@ -32,10 +33,27 @@ SslConn::~SslConn() {
         delete under_layer_;
         under_layer_ = nullptr;
     }
+
+    if (flush_lock_) {
+        st_mutex_destroy(flush_lock_);
+        flush_lock_ = nullptr;
+    }
 }
 
 int SslConn::ReadFully(void* buf, size_t size, ssize_t* nread) {
-    return skt_->ReadFully(buf, size, nread);
+    int err = COCO_SUCCESS;
+    size_t got = 0;
+    while (got < size) {
+        ssize_t n = 0;
+        if ((err = Read((char*)buf + got, size - got, &n)) != COCO_SUCCESS) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    if (nread) {
+        *nread = (ssize_t)got;
+    }
+    return err;
 }
 
 int SslConn::Read(void* plaintext, size_t nn_plaintext, ssize_t* nread) {
@@ -146,25 +164,30 @@ std::string SslConn::RemoteAddr() {
 }
 
 int SslConn::FlushOutput() {
-    int err = COCO_SUCCESS;
-
-    uint8_t* data = NULL;
-    long size = BIO_get_mem_data(bio_out, &data);
-    if (size <= 0) {
-        return err;
+    // Records queued by this caller are either still in bio_out, or were taken by the
+    // flush holding the lock, which writes them before it unlocks.
+    if (st_mutex_lock(flush_lock_) != 0) {
+        return ERROR_THREAD_INTERRUPED;
     }
 
-    if ((err = skt_->Write(data, size, NULL)) != COCO_SUCCESS) {
-        coco_error("https: write data=%p, size=%ld", data, size);
-        return err;
+    int err = flush_err_;
+    if (flush_buf_.empty()) {
+        flush_buf_.resize(16 * 1024);
     }
-
-    int r0 = BIO_reset(bio_out);
-    if (r0 != 1) {
-        coco_error("BIO_reset r0=%d", r0);
-        return ERROR_HTTPS_WRITE;
+    while (err == COCO_SUCCESS && BIO_ctrl_pending(bio_out) > 0) {
+        int n = BIO_read(bio_out, flush_buf_.data(), (int)flush_buf_.size());
+        if (n <= 0) {
+            coco_error("BIO_read r0=%d", n);
+            err = ERROR_HTTPS_WRITE;
+            break;
+        }
+        if ((err = skt_->Write(flush_buf_.data(), n, NULL)) != COCO_SUCCESS) {
+            coco_error("https: write size=%d", n);
+        }
     }
+    flush_err_ = err;
 
+    st_mutex_unlock(flush_lock_);
     return err;
 }
 

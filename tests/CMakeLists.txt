@@ -4,6 +4,7 @@ add_executable(coco_tests
     coroutine_test.cpp
     tcp_server_test.cpp
     ws_test.cpp
+    tls_test.cpp
 )
 target_include_directories(coco_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(coco_tests PRIVATE COCO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
@@ -45,6 +46,8 @@ set(COCO_TEST_CASES
     WsClientAnswersPing
     WsClientAnswersClose
     WsClientSendBlockedWhenReadSideEnds
+    TlsReadFullyReturnsPlaintext
+    TlsConcurrentWriters
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

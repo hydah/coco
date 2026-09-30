@@ -2,10 +2,13 @@
 
 #include <openssl/ssl.h>
 
+#include <vector>
+
 #include "base/coroutine_mgr.hpp"
 #include "net/layer4/coco_layer4.hpp"
 
-// The SSL connection over TCP transport, in server mode.
+// The SSL connection over TCP transport. One coroutine may read while others write:
+// ciphertext produced by either side goes out in order, one flush at a time.
 class SslConn : public StreamConn {
  public:
     SslConn(st_netfd_t _stfd, StreamConn* under_layer);
@@ -22,6 +25,12 @@ class SslConn : public StreamConn {
     int DoHandshake();
     // Send whatever SSL has queued in bio_out to the peer.
     int FlushOutput();
+    // Serializes flushes: SSL_read and SSL_write both queue records, and a flush yields.
+    st_mutex_t flush_lock_ = nullptr;
+    // Ciphertext taken out of bio_out, so a flush never writes from memory SSL may move.
+    std::vector<char> flush_buf_;
+    // The first failed flush; the stream is broken for every later writer.
+    int flush_err_ = 0;
 
     // The under-layer plaintext transport.
     StreamConn* under_layer_ = nullptr;

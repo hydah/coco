@@ -21,7 +21,7 @@ ST 的套接字是非阻塞的，读不到数据时 `st_read` 让出协程。Ope
 ```
 
 - `bio_in`：协程从 TCP 读到的密文，经 `BIO_write` 交给 OpenSSL。
-- `bio_out`：OpenSSL 要发出的密文。`FlushOutput()` 用 `BIO_get_mem_data` 取出后 `st_write` 写到 TCP，再 `BIO_reset` 清空，避免下次重复发送。
+- `bio_out`：OpenSSL 要发出的密文。`FlushOutput()` 用 `BIO_read` 把它取到 `SslConn` 自己的缓冲里，再 `st_write` 写到 TCP。取出即消费，不会重复发送。
 
 `SSL_set_bio` 把这两块 BIO 交给 `SSL` 对象。之后 `SSL_free` 会一起释放它们，`SslConn` 析构里只 `SSL_free(ssl)` 和 `SSL_CTX_free`。
 
@@ -139,7 +139,21 @@ if (WANT_READ) {
 
 `*nwrite` 由 `SslConn` 从 0 累加后写入，调用方传入的值不参与累加。`Writev` 对每个 `iovec` 调用 `Write`，总字节数同样从 0 算起。
 
-`SSL_read` 返回正数只表示至少有 1 字节明文，不保证填满缓冲区。要读满指定长度用 `ReadFully`，它走下层 `st_read_fully`，读的是密文长度而不是明文长度，不能用来「读满 N 字节 HTTP 正文」。正文长度由 HTTP 层解析 `Content-Length` 后多次 `Read` 凑齐。
+`SSL_read` 返回正数只表示至少有 1 字节明文，不保证填满缓冲区。要读满指定长度用 `ReadFully`，它循环调用 `Read`，直到拿够这么多明文或出错。
+
+## 一个读、多个写
+
+一条 `SslConn` 可以由一条协程读，同时由其他协程写，WebSocket 客户端就是这样用的。难点在 `bio_out`：`SSL_write` 往里放记录，`SSL_read` 也会（比如 KeyUpdate 的回应），而 flush 在 `st_write` 上会让出。
+
+如果 flush 直接从 `BIO_get_mem_data` 返回的指针写，让出期间另一条协程的 `SSL_write` 往 `bio_out` 追加数据，BIO 可能重新分配内存，这个指针就失效了。随后的 `BIO_reset` 还会丢掉别人刚放进去的记录，TCP 上的记录流被破坏，对端解密失败。
+
+所以 `FlushOutput()` 这样做：
+
+- 持有 `flush_lock_`（ST 的互斥量，按先来后到唤醒）再从 `bio_out` 取数据。一条协程在 flush 时，其他协程产生的记录留在 `bio_out` 里，由持锁者在同一轮循环里一并写出，或者等轮到自己时再写。记录上线的顺序因此和产生的顺序一致。
+- 用 `BIO_read` 拷到自己的缓冲再写，让出期间 `bio_out` 怎么变都不影响正在写的字节。
+- 写失败时把错误记在 `flush_err_` 上。记录流一旦断了就无法恢复，之后所有的写都返回同一个错误。
+
+多条协程同时 `Read` 不支持：`SSL_read` 缺数据时会去 `st_read` 喂 `bio_in`，两条读协程会互相抢走对方的密文。
 
 ## 数据进了哪一层
 
