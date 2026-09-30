@@ -84,7 +84,7 @@ int WebSocketFrameDecoder::Decode(const uint8_t *data, size_t len) {
         // No extension is negotiated, so the RSV bits must be zero.
         bool known = opcode <= WebSocketHeader::BINARY || (opcode >= WebSocketHeader::CLOSE &&
                                                            opcode <= WebSocketHeader::PONG);
-        if (reserved != 0 || !known) {
+        if (reserved != 0 || !known || (require_mask_ && !masked)) {
             err_ = ERROR_WS_PROTOCOL;
             return err_;
         }

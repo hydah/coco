@@ -12,7 +12,8 @@
 
 // Serves HTTP/1.1 requests on conn through mux until the peer closes, a request is not
 // keep-alive, or the coroutine is stopped. conn may be plain TCP or already-handshaken TLS.
-// The parsed message's observer is &conn.
+// The parsed message's observer is &conn. An Upgrade request is the last one: its handler
+// may take over conn (e.g. WebSocketHandler) and returns when the connection is done.
 int ServeHttpConn(StreamConn &conn, HttpServeMux *mux);
 
 // the default timeout for http client. 1s

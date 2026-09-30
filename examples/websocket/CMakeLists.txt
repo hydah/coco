@@ -11,3 +11,7 @@
 add_executable(ws_client ws_client.cpp)
 target_link_libraries(ws_client coco dl)
 install(TARGETS ws_client RUNTIME DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/websocket/)
+
+add_executable(ws_server ws_server.cpp)
+target_link_libraries(ws_server coco dl)
+install(TARGETS ws_server RUNTIME DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/websocket/)

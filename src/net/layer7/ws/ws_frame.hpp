@@ -65,7 +65,9 @@ class WebSocketFrameDecoder {
     // A non-zero return stops decoding; Decode() returns it.
     typedef std::function<int(std::unique_ptr<WebSocektMessage> msg)> MessageHandler;
 
-    explicit WebSocketFrameDecoder(MessageHandler on_message) : on_message_(on_message) {}
+    // A server sets require_mask: RFC 6455 5.1 has it fail on unmasked client frames.
+    explicit WebSocketFrameDecoder(MessageHandler on_message, bool require_mask = false)
+        : require_mask_(require_mask), on_message_(on_message) {}
 
     // Returns ERROR_WS_PROTOCOL or ERROR_WS_MESSAGE_TOO_LARGE for a bad peer, or the
     // handler's error. After an error the decoder rejects all further input.
@@ -80,6 +82,7 @@ class WebSocketFrameDecoder {
     // the data message whose final fragment has not arrived.
     std::unique_ptr<WebSocektMessage> partial_;
     int err_ = 0;
+    bool require_mask_;
     MessageHandler on_message_;
 };
 

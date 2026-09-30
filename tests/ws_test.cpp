@@ -1,5 +1,6 @@
 // WebSocket framing (RFC 6455) and the client's replies to control frames.
 
+#include <string.h>
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -398,6 +399,76 @@ COTEST(WsClientDeletedWhileSending) {
     release = true;
     st_thread_join(server, NULL);
     delete l;
+}
+
+// After Dial the caller reads: ReadMessage answers a PING on the way to the next data
+// message, and deleting the client closes with CLOSE 1000.
+COTEST(WsClientDialReadsAndCloses) {
+    const int port = 19206;
+    TcpListener *l = ListenTcp(kLoopback, port);
+    CHECK(l != nullptr);
+    if (!l) {
+        return;
+    }
+
+    std::string request;
+    bool pong_ok = false, close_ok = false;
+    st_thread_t server = cotest::Go([&]() {
+        TcpConn *c = l->Accept();
+        if (!c) {
+            return;
+        }
+        c->SetTimeout(1000 * 1000);
+        request = ReadUntil(c, "\r\n\r\n");
+        std::string key;
+        size_t pos = request.find("Sec-WebSocket-Key: ");
+        if (pos != std::string::npos) {
+            size_t start = pos + strlen("Sec-WebSocket-Key: ");
+            key = request.substr(start, request.find("\r\n", start) - start);
+        }
+        unsigned char sha[20] = {0};
+        std::string src = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        sha1::calc(src.data(), src.size(), sha);
+        WriteAll(c, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                    "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+                        base64::Encode(sha, sizeof(sha)) + "\r\n\r\n");
+        std::unique_ptr<TcpConn> conn(c);
+        WriteAll(c, Frame(WS::PING, "hb") + Frame(WS::TEXT, "hi"));
+        // The PONG and the CLOSE may arrive in one read, so one decoder takes both.
+        Collector got;
+        char buf[1024];
+        ssize_t n = 0;
+        while (got.msgs.size() < 2 && c->Read(buf, sizeof(buf), &n) == COCO_SUCCESS) {
+            got.decoder.Decode((const uint8_t *)buf, n);
+        }
+        pong_ok = got.msgs.size() > 0 && Is(got.msgs[0].get(), WS::PONG, "hb");
+        close_ok = got.msgs.size() > 1 &&
+                   Is(got.msgs[1].get(), WS::CLOSE, std::string("\x03\xe8", 2));
+    });
+
+    WebSocketClient *ws = new WebSocketClient();
+    CHECK_EQ(ws->Dial("ws://127.0.0.1:" + std::to_string(port) + "/chat?room=1"), COCO_SUCCESS);
+    std::string data;
+    WS::Type type = WS::BINARY;
+    CHECK_EQ(ws->ReadMessage(&data, &type), COCO_SUCCESS);
+    CHECK(data == "hi");
+    CHECK_EQ(type, WS::TEXT);
+    delete ws;
+
+    st_thread_join(server, NULL);
+    CHECK(request.find("GET /chat?room=1 HTTP/1.1\r\n") == 0);
+    CHECK(request.find("Host: 127.0.0.1:" + std::to_string(port) + "\r\n") != std::string::npos);
+    CHECK(pong_ok);
+    CHECK(close_ok);
+    delete l;
+}
+
+COTEST(WsClientDialRejectsBadUrl) {
+    const char *urls[] = {"http://127.0.0.1/", "127.0.0.1:80", "ws://", "not a url"};
+    for (const char *url : urls) {
+        WebSocketClient ws;
+        CHECK_EQ(ws.Dial(url), ERROR_HTTP_PARSE_URI);
+    }
 }
 
 // Every connection sends a fresh 16-byte nonce as its key.

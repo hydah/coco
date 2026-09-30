@@ -1,6 +1,7 @@
 #include "net/layer7/http/http_message.h"
 
 #include <assert.h>
+#include <strings.h>
 
 #include "common/error.hpp"
 #include "log/log.hpp"
@@ -260,10 +261,8 @@ std::string HttpMessage::get_request_header(std::string name) {
 
     for (it = headers_->begin(); it != headers_->end(); ++it) {
         HttpHeaderField &elem = *it;
-        std::string key = elem.first;
-        std::string value = elem.second;
-        if (key == name) {
-            return value;
+        if (strcasecmp(elem.first.c_str(), name.c_str()) == 0) {
+            return elem.second;
         }
     }
 

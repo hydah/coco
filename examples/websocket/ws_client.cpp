@@ -3,36 +3,23 @@
 
 #include "coco_api.h"
 #include "common/error.hpp"
-#include "log/log.hpp"
-#include "net/coco_socket.hpp"
 #include "net/layer7/ws/coco_ws.hpp"
 
-using namespace std;
-
-string server_ip = "183.2.143.77";
-int port = 443;
-int OnMessage(WebSocketConn* conn, std::unique_ptr<WebSocektMessage> msg) {
-    std::cout << "get " << msg->data_ << endl;
-    return 0;
-}
-
-int main() {
-    int ret = COCO_SUCCESS;
-
+// Talks to ws_server: sends a few messages and prints the echoes.
+int main(int argc, char **argv) {
     CocoInit();
 
-    WebSocketClient ws_client;
-    ws_client.SetMessageHandler(OnMessage);
-    if ((ret = ws_client.Start(true, server_ip, port, "/")) != COCO_SUCCESS) {
-        coco_error("websocket connect failed. ret=%d", ret);
-        return ret;
+    WebSocketClient ws;
+    if (ws.Dial(argc > 1 ? argv[1] : "ws://127.0.0.1:9083/echo") != COCO_SUCCESS) {
+        return -1;
     }
-
-    std::string msg = "hello ws";
-    std::cout << "send hello ws" << std::endl;
-    ws_client.Send((uint8_t*)msg.data(), msg.size());
-
-    CocoLoopMs(1000);
-
+    for (int i = 0; i < 3; ++i) {
+        ws.Send("hello " + std::to_string(i));
+        std::string data;
+        if (ws.ReadMessage(&data) != COCO_SUCCESS) {
+            break;
+        }
+        std::cout << "got " << data << std::endl;
+    }
     return 0;
 }

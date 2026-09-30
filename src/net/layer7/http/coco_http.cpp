@@ -50,6 +50,11 @@ int ServeHttpConn(StreamConn &conn, HttpServeMux *mux) {
             return ret;
         }
 
+        // Whether or not the handler switched protocols, what follows is not HTTP.
+        if (msg->is_upgrade()) {
+            break;
+        }
+
         // read all rest bytes in request body. A request with neither Content-Length nor
         // chunked encoding has no body; the reader would otherwise read until the peer closes.
         char buf[HTTP_READ_CACHE_BYTES];

@@ -42,6 +42,9 @@ public:
    * whether should keep the connection alive.
    */
   virtual bool is_keep_alive() { return keep_alive; };
+  // Upgrade request (Upgrade header plus the Connection: upgrade token), or CONNECT. The
+  // bytes after its header belong to the new protocol.
+  virtual bool is_upgrade() { return header_->upgrade != 0; };
   /**
    * the uri contains the host and path.
    */
@@ -88,6 +91,7 @@ public:
   virtual int request_header_count();
   virtual std::string request_header_key_at(int index);
   virtual std::string request_header_value_at(int index);
+  // Field names compare case-insensitively (RFC 7230 3.2).
   virtual std::string get_request_header(std::string name);
   virtual bool is_jsonp();
 

@@ -1,9 +1,11 @@
 #include "net/layer7/ws/coco_ws.hpp"
 
 #include <string.h>
+#include <strings.h>
 
 #include <random>
 
+#include "coco_api.h"
 #include "utils/base64.hpp"
 #include "utils/sha1.hpp"
 
@@ -18,33 +20,38 @@ static std::string NewWebSocketKey() {
     return base64::Encode(nonce, sizeof(nonce));
 }
 
-WebSocketConn::WebSocketConn(WebSocketClient *client, ConnManager *mgr, StreamConn *conn,
-                             HttpMessage *r)
-    : ConnRoutine(mgr),
-      client_(client),
-      conn_(conn),
-      http_msg_(r),
+// RFC 6455 4.2.2: the Sec-WebSocket-Accept value for a Sec-WebSocket-Key.
+static std::string WebSocketAccept(const std::string &key) {
+    unsigned char sha[20] = {0};
+    std::string src = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    sha1::calc(src.data(), src.size(), sha);
+    return base64::Encode(sha, sizeof(sha));
+}
+
+WebSocketConn::WebSocketConn(StreamConn *conn, HttpResponseReader *reader, bool is_client)
+    : conn_(conn),
+      reader_(reader),
+      is_client_(is_client),
       decoder_([this](std::unique_ptr<WebSocektMessage> msg) {
-          return ProcessMessage(std::move(msg));
-      }) {}
+          return OnFrame(std::move(msg));
+      }, !is_client) {
+    write_lock_ = st_mutex_new();
+    // An idle connection is normal, so reads wait longer than the connect timeout.
+    conn_->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
+}
 
 WebSocketConn::~WebSocketConn() {
-    coco_info("destruct websocket conn");
-    client_->OnConnClosed();
+    if (write_lock_) {
+        st_mutex_destroy(write_lock_);
+        write_lock_ = nullptr;
+    }
 }
 
-int WebSocketConn::Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
-    return client_->WriteFrame(buf, len, data_type);
-}
-
-int WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
+int WebSocketConn::OnFrame(std::unique_ptr<WebSocektMessage> msg) {
     switch (msg->_opcode) {
-        case WebSocketHeader::CLOSE: {
-            // RFC 6455 5.5.1: answer with a close frame echoing the status code, then stop.
-            size_t code_len = msg->data_.size() >= 2 ? 2 : 0;
-            Send((const uint8_t *)msg->data_.data(), code_len, WebSocketHeader::CLOSE);
+        case WebSocketHeader::CLOSE:
+            peer_close_code_ = msg->data_.substr(0, msg->data_.size() >= 2 ? 2 : 0);
             return ERROR_WS_CLOSED;
-        }
 
         case WebSocketHeader::PING:
             //心跳包
@@ -55,37 +62,27 @@ int WebSocketConn::ProcessMessage(std::unique_ptr<WebSocektMessage> msg) {
             return COCO_SUCCESS;
 
         default:
-            client_->HandleMessage(this, std::move(msg));
+            inbox_.push_back(std::move(msg));
             return COCO_SUCCESS;
     }
 }
 
-int WebSocketConn::DoCycle() {
-    int ret = COCO_SUCCESS;
-    // An idle connection is normal, so reads wait longer than the connect timeout.
-    conn_->SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
-    HttpResponseReader *br = http_msg_->body_reader();
-
-    // process websocket messages.
-    while (!ShouldTermCycle()) {
-        char buf[HTTP_READ_CACHE_BYTES];
-        int nb_read = 0;
-
-        if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
-            if (!coco_is_client_gracefully_close(ret)) {
-                coco_error("websocket read error. ret=%d", ret);
-            }
-            return ret;
-        }
-
-        if ((ret = decoder_.Decode((uint8_t *)buf, nb_read)) != COCO_SUCCESS) {
-            break;
-        }
+int WebSocketConn::ReadFrames() {
+    if (CocoShouldStop()) {
+        return ERROR_THREAD_INTERRUPED;
     }
 
-    if (ret == ERROR_WS_CLOSED) {
-        return COCO_SUCCESS;
+    char buf[HTTP_READ_CACHE_BYTES];
+    int nb_read = 0;
+    int ret = reader_->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read);
+    if (ret != COCO_SUCCESS) {
+        if (!coco_is_client_gracefully_close(ret)) {
+            coco_error("websocket read error. ret=%d", ret);
+        }
+        return ret;
     }
+
+    ret = decoder_.Decode((uint8_t *)buf, nb_read);
     if (ret == ERROR_WS_PROTOCOL || ret == ERROR_WS_MESSAGE_TOO_LARGE) {
         // RFC 6455 7.4.1: 1002 protocol error, 1009 message too big.
         uint16_t code = ret == ERROR_WS_PROTOCOL ? 1002 : 1009;
@@ -96,20 +93,62 @@ int WebSocketConn::DoCycle() {
     return ret;
 }
 
-WebSocketClient::WebSocketClient() {
-    manager_ = new ConnManager();
-    write_lock_ = st_mutex_new();
+int WebSocketConn::ReadNext(std::unique_ptr<WebSocektMessage> *msg) {
+    // Messages decoded ahead of a CLOSE or a bad frame are still delivered.
+    while (inbox_.empty()) {
+        if (read_err_ != COCO_SUCCESS) {
+            // RFC 6455 5.5.1: echo the peer's status code once the messages before its
+            // CLOSE were read, so replies to them still go out first.
+            if (read_err_ == ERROR_WS_CLOSED && !closed_) {
+                Send(peer_close_code_, WebSocketHeader::CLOSE);
+            }
+            closed_ = true;
+            return read_err_;
+        }
+        read_err_ = ReadFrames();
+        if (read_err_ != COCO_SUCCESS && read_err_ != ERROR_WS_CLOSED) {
+            closed_ = true;
+        }
+    }
+    *msg = std::move(inbox_.front());
+    inbox_.pop_front();
+    return COCO_SUCCESS;
 }
 
-WebSocketClient::~WebSocketClient() {
-    // The read coroutine uses the socket and the upgrade response until it has exited.
-    closed_ = true;
-    if (manager_) {
-        delete manager_;
-        manager_ = nullptr;
+int WebSocketConn::ReadMessage(std::string *data, WebSocketHeader::Type *type) {
+    std::unique_ptr<WebSocektMessage> msg;
+    int ret = ReadNext(&msg);
+    if (ret != COCO_SUCCESS) {
+        return ret;
     }
-    // A Send parked in a write returns once it times out; it must not wake up on a freed
-    // client. The check and the wait do not yield, so the last writer's signal is not lost.
+    data->swap(msg->data_);
+    if (type) {
+        *type = msg->_opcode;
+    }
+    return COCO_SUCCESS;
+}
+
+int WebSocketConn::Serve(const WebsocketMessageHandler &handler) {
+    std::unique_ptr<WebSocektMessage> msg;
+    int ret;
+    while ((ret = ReadNext(&msg)) == COCO_SUCCESS) {
+        if (handler != nullptr) {
+            handler(this, std::move(msg));
+        }
+    }
+    Finish();
+    return ret == ERROR_WS_CLOSED ? COCO_SUCCESS : ret;
+}
+
+void WebSocketConn::Finish() {
+    if (!closed_) {
+        uint8_t normal[2] = {0x03, 0xe8};
+        Send(normal, sizeof(normal), WebSocketHeader::CLOSE);
+    }
+    closed_ = true;
+
+    // A Send parked in a write returns once it times out; conn must stay open under it.
+    // The check and the wait do not yield, so the last writer's signal is not lost.
     if (writers_ > 0) {
         writers_done_ = st_cond_new();
         while (writers_ > 0) {
@@ -118,16 +157,140 @@ WebSocketClient::~WebSocketClient() {
         st_cond_destroy(writers_done_);
         writers_done_ = nullptr;
     }
-    coco_freep(http_client_);
-    stream_ = nullptr;
-    if (write_lock_) {
-        st_mutex_destroy(write_lock_);
-        write_lock_ = nullptr;
+}
+
+int WebSocketConn::Send(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
+    if (closed_) {
+        return ERROR_WS_CLOSED;
     }
+
+    WebSocketHeader header;
+    header._opcode = data_type;
+    // RFC 6455 5.1: clients mask every frame, servers never do.
+    header._mask_flag = is_client_;
+    std::string frame = EncodeWebSocketFrame(header, buf, len);
+
+    int ret = ERROR_THREAD_INTERRUPED;
+    ++writers_;
+    if (st_mutex_lock(write_lock_) == 0) {
+        // The connection may have closed, or sent CLOSE, while this writer waited its turn.
+        ret = ERROR_WS_CLOSED;
+        if (!closed_) {
+            ret = conn_->Write((void *)frame.data(), frame.size(), nullptr);
+            if (data_type == WebSocketHeader::CLOSE) {
+                closed_ = true;
+            }
+        }
+        st_mutex_unlock(write_lock_);
+    }
+    --writers_;
+
+    if (writers_ == 0 && writers_done_) {
+        st_cond_signal(writers_done_);
+    }
+    return ret;
+}
+
+// Runs the client's connection, then closes the socket.
+class WebSocketClient::Reader : public ConnRoutine {
+ public:
+    explicit Reader(WebSocketClient *client) : ConnRoutine(client->manager_), client_(client) {}
+    virtual ~Reader() { client_->reader_ = nullptr; }
+
+    virtual std::string GetRemoteAddr() { return client_->conn_->GetRemoteAddr(); }
+
+ protected:
+    virtual int DoCycle() {
+        int ret = client_->conn_->Serve(client_->message_handler_);
+        client_->http_client_->Disconnect();
+        return ret;
+    }
+
+ private:
+    WebSocketClient *client_;
+};
+
+WebSocketClient::WebSocketClient() { manager_ = new ConnManager(); }
+
+WebSocketClient::~WebSocketClient() {
+    if (conn_ != nullptr) {
+        if (background_) {
+            conn_->closed_ = true;
+        } else {
+            // Nobody reads after Dial, so the connection is closed here.
+            conn_->Finish();
+        }
+    }
+    // Interrupts the read coroutine and waits until it has released the socket.
+    if (manager_) {
+        delete manager_;
+        manager_ = nullptr;
+    }
+    coco_freep(conn_);
+    coco_freep(http_client_);
+}
+
+int WebSocketClient::Dial(const std::string &url, uint64_t timeout_us) {
+    http_parser_url u;
+    memset(&u, 0, sizeof(u));
+    if (http_parser_parse_url(url.data(), url.size(), 0, &u) != 0) {
+        coco_error("websocket: bad url %s", url.c_str());
+        return ERROR_HTTP_PARSE_URI;
+    }
+    auto field = [&](http_parser_url_fields f) {
+        if ((u.field_set & (1 << f)) == 0) {
+            return std::string();
+        }
+        return url.substr(u.field_data[f].off, u.field_data[f].len);
+    };
+
+    std::string schema = field(UF_SCHEMA);
+    bool is_wss = strcasecmp(schema.c_str(), "wss") == 0;
+    std::string host = field(UF_HOST);
+    if ((!is_wss && strcasecmp(schema.c_str(), "ws") != 0) || host.empty()) {
+        coco_error("websocket: url must be ws://host or wss://host, got %s", url.c_str());
+        return ERROR_HTTP_PARSE_URI;
+    }
+    uint16_t port = u.port != 0 ? u.port : (is_wss ? 443 : 80);
+    std::string path = field(UF_PATH);
+    if (path.empty()) {
+        path = "/";
+    }
+    if (u.field_set & (1 << UF_QUERY)) {
+        path += "?" + field(UF_QUERY);
+    }
+    return Handshake(is_wss, host, port, path, timeout_us);
+}
+
+int WebSocketClient::ReadMessage(std::string *data, WebSocketHeader::Type *type) {
+    if (background_) {
+        coco_error("websocket: ReadMessage after Start, the read coroutine owns reading");
+        return ERROR_THREAD_STARTED;
+    }
+    if (conn_ == nullptr) {
+        return ERROR_WS_CLOSED;
+    }
+    return conn_->ReadMessage(data, type);
 }
 
 int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, std::string path,
                            uint64_t timeout_us) {
+    int ret = Handshake(is_wss, host, port, path, timeout_us);
+    if (ret != COCO_SUCCESS) {
+        return ret;
+    }
+    background_ = true;
+    reader_ = new Reader(this);
+    if ((ret = reader_->Start()) != COCO_SUCCESS) {
+        delete reader_;
+        conn_->closed_ = true;
+        http_client_->Disconnect();
+    }
+    return ret;
+}
+
+int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t port,
+                               const std::string &path, uint64_t timeout_us) {
     if (http_client_ != nullptr) {
         coco_error("websocket client already started");
         return ERROR_THREAD_STARTED;
@@ -142,7 +305,12 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
     http_client_->SetMethod("GET");
     http_client_->SetPath(path);
 
-    http_client_->SetHeader("Host", host);
+    // RFC 7230 5.4: an IPv6 literal goes in brackets, and a non-default port is included.
+    std::string host_header = host.find(':') != std::string::npos ? "[" + host + "]" : host;
+    if (port != (is_wss ? 443 : 80)) {
+        host_header += ":" + std::to_string(port);
+    }
+    http_client_->SetHeader("Host", host_header);
     http_client_->SetHeader("User-Agent", "coco");
     http_client_->SetHeader("Upgrade", "websocket");
     http_client_->SetHeader("Connection", "Upgrade");
@@ -164,91 +332,69 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
         return -2;
     }
 
-    unsigned char sha[30] = {0};
-    std::string src_str = sec_websocket_key_ + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    sha1::calc(src_str.data(), src_str.size(), sha);
-    if (base64::Encode((unsigned char *)sha, 20) !=
+    if (WebSocketAccept(sec_websocket_key_) !=
         ws_http_msg->get_request_header("Sec-WebSocket-Accept")) {
         // close
         coco_error("Sec-WebSocket-Accept not equal");
         return -3;
     }
 
-    stream_ = http_client_->GetUnderlayerConn();
-    conn_ = new WebSocketConn(this, manager_, stream_, ws_http_msg);
-    closed_ = false;
-    if ((ret = conn_->Start()) != COCO_SUCCESS) {
-        closed_ = true;
-        delete conn_;
-        conn_ = nullptr;
-    }
-    return ret;
-}
-
-void WebSocketClient::OnConnClosed() {
-    conn_ = nullptr;
-    closed_ = true;
-    CloseSocketIfIdle();
-}
-
-void WebSocketClient::CloseSocketIfIdle() {
-    if (conn_ != nullptr || writers_ > 0 || stream_ == nullptr) {
-        return;
-    }
-    stream_ = nullptr;
-    http_client_->Disconnect();
-}
-
-int WebSocketClient::Stop() {
-    closed_ = true;
-    if (conn_ != nullptr) {
-        conn_->Stop();
-    }
+    conn_ = new WebSocketConn(http_client_->GetUnderlayerConn(), ws_http_msg->body_reader(), true);
     return COCO_SUCCESS;
 }
 
-int WebSocketClient::HandleMessage(WebSocketConn *conn, std::unique_ptr<WebSocektMessage> msg) {
-    if (message_handler_ != nullptr) {
-        return message_handler_(conn, std::move(msg));
+int WebSocketClient::Stop() {
+    if (conn_ != nullptr) {
+        conn_->closed_ = true;
+    }
+    if (reader_ != nullptr) {
+        reader_->Stop();
     }
     return COCO_SUCCESS;
 }
 
 int WebSocketClient::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_type) {
-    return WriteFrame(buf, (size_t)len, data_type);
-}
-
-int WebSocketClient::WriteFrame(const uint8_t *buf, size_t len, WebSocketHeader::Type data_type) {
-    if (closed_) {
+    if (conn_ == nullptr) {
         return ERROR_WS_CLOSED;
     }
+    return conn_->Send(buf, (size_t)len, data_type);
+}
 
-    WebSocketHeader header;
-    header._opcode = data_type;
-    //客户端需要加密
-    header._mask_flag = true;
-    std::string frame = EncodeWebSocketFrame(header, buf, len);
+static bool HeaderIs(HttpMessage *r, const char *name, const char *value) {
+    return strcasecmp(r->get_request_header(name).c_str(), value) == 0;
+}
 
-    int ret = ERROR_THREAD_INTERRUPED;
-    ++writers_;
-    if (st_mutex_lock(write_lock_) == 0) {
-        // The connection may have closed, or sent CLOSE, while this writer waited its turn.
-        ret = ERROR_WS_CLOSED;
-        if (!closed_) {
-            ret = stream_->Write((void *)frame.data(), frame.size(), nullptr);
-            if (data_type == WebSocketHeader::CLOSE) {
-                closed_ = true;
-            }
-        }
-        st_mutex_unlock(write_lock_);
+int WebSocketHandler::serve_http(HttpResponseWriter *w, HttpMessage *r) {
+    // RFC 6455 4.2.1. is_upgrade() covers the Connection: upgrade token.
+    std::string key = r->get_request_header("Sec-WebSocket-Key");
+    if (!r->is_http_get() || !r->is_upgrade() || r->is_chunked() ||
+        !HeaderIs(r, "Upgrade", "websocket") || base64::decode(key).size() != 16) {
+        return go_http_error(w, CONSTS_HTTP_BadRequest);
     }
-    --writers_;
+    if (r->get_request_header("Sec-WebSocket-Version") != "13") {
+        w->header()->set("Sec-WebSocket-Version", "13");
+        return go_http_error(w, CONSTS_HTTP_BadRequest);
+    }
 
-    if (closed_) {
-        CloseSocketIfIdle();
+    StreamConn *conn = static_cast<StreamConn *>(r->GetObserver());
+    std::string rsp =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: " +
+        WebSocketAccept(key) + "\r\n\r\n";
+    int ret = conn->Write((void *)rsp.data(), rsp.size(), nullptr);
+    if (ret != COCO_SUCCESS) {
+        return ret;
     }
-    if (writers_ == 0 && writers_done_) {
-        st_cond_signal(writers_done_);
-    }
-    return ret;
+
+    // The frames follow the header, so the reader must not stop at a declared body length.
+    r->set_content_length(-1);
+    // A copy, in case the handler is removed from the mux while the session runs.
+    ServeFunc serve = serve_;
+    WebSocketConn ws(conn, r->body_reader(), false);
+    serve(&ws);
+    // Read errors were logged, and the connection ends here either way.
+    ws.Finish();
+    return COCO_SUCCESS;
 }
