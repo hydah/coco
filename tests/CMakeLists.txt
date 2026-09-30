@@ -46,6 +46,8 @@ set(COCO_TEST_CASES
     WsClientAnswersPing
     WsClientAnswersClose
     WsClientSendBlockedWhenReadSideEnds
+    WsClientDeletedWhileSending
+    WsClientKeyIsRandom
     TlsReadFullyReturnsPlaintext
     TlsConcurrentWriters
 )

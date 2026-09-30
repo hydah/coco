@@ -41,12 +41,12 @@ class WebSocketConn : public ConnRoutine {
 
 // Owns the connection. Send() may be called from any coroutine; once the peer closed,
 // the read side failed or Stop() was called, it returns ERROR_WS_CLOSED. The socket is
-// closed when the read coroutine has exited and no Send() is still writing to it. The
-// client must not be deleted while another coroutine is inside Send().
+// closed when the read coroutine has exited and no Send() is still writing to it.
 class WebSocketClient {
  public:
     WebSocketClient();
-    // Stops the read coroutine and waits for it, then closes the socket.
+    // Stops the read coroutine, waits for it and for any Send() still writing (bounded by
+    // the send timeout), then closes the socket. Must not be called from a message handler.
     virtual ~WebSocketClient();
 
     /**
@@ -86,6 +86,8 @@ class WebSocketClient {
     st_mutex_t write_lock_ = nullptr;
     // coroutines inside WriteFrame, including those waiting for the lock.
     int writers_ = 0;
+    // Set while the destructor waits for writers_ to drop to zero.
+    st_cond_t writers_done_ = nullptr;
     bool closed_ = true;
 
     WebSocketConn *conn_ = nullptr;

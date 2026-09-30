@@ -194,7 +194,7 @@ bool WriteAll(TcpConn *c, const std::string &data) {
 }
 
 // Accepts one client and completes the upgrade handshake.
-TcpConn *AcceptWebSocket(TcpListener *l) {
+TcpConn *AcceptWebSocket(TcpListener *l, std::string *key_out = nullptr) {
     TcpConn *c = l->Accept();
     if (!c) {
         return nullptr;
@@ -207,6 +207,9 @@ TcpConn *AcceptWebSocket(TcpListener *l) {
     if (pos != std::string::npos) {
         size_t start = pos + key_hdr.size();
         key = req.substr(start, req.find("\r\n", start) - start);
+    }
+    if (key_out) {
+        *key_out = key;
     }
     unsigned char sha[20] = {0};
     std::string src = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -356,5 +359,66 @@ COTEST(WsClientSendBlockedWhenReadSideEnds) {
     release = true;
     st_thread_join(server, NULL);
     delete ws;
+    delete l;
+}
+
+// Deleting the client while another coroutine is parked in Send waits for that Send to
+// give up, instead of freeing the socket and lock under it.
+COTEST(WsClientDeletedWhileSending) {
+    const int port = 19204;
+    TcpListener *l = ListenTcp(kLoopback, port);
+    CHECK(l != nullptr);
+    if (!l) {
+        return;
+    }
+
+    bool release = false;
+    st_thread_t server = cotest::Go([&]() {
+        std::unique_ptr<TcpConn> c(AcceptWebSocket(l));
+        cotest::WaitUntil([&]() { return release; }, 5000);
+    });
+
+    WebSocketClient *ws = new WebSocketClient();
+    CHECK_EQ(ws->Start(false, kLoopback, port, "/", 300 * 1000), COCO_SUCCESS);
+
+    bool sending = false;
+    int send_ret = COCO_SUCCESS;
+    st_thread_t sender = cotest::Go([&]() {
+        std::string big(32 * 1024 * 1024, 'x');
+        sending = true;
+        send_ret = ws->Send((uint8_t *)&big[0], big.size());
+    });
+    CHECK(cotest::WaitUntil([&]() { return sending; }));
+    CocoSleepMs(20);
+
+    delete ws;
+    CHECK_EQ(send_ret, ERROR_SOCKET_TIMEOUT);
+
+    st_thread_join(sender, NULL);
+    release = true;
+    st_thread_join(server, NULL);
+    delete l;
+}
+
+// Every connection sends a fresh 16-byte nonce as its key.
+COTEST(WsClientKeyIsRandom) {
+    const int port = 19205;
+    TcpListener *l = ListenTcp(kLoopback, port);
+    CHECK(l != nullptr);
+    if (!l) {
+        return;
+    }
+
+    std::string keys[2];
+    for (int i = 0; i < 2; ++i) {
+        st_thread_t server = cotest::Go([&, i]() {
+            std::unique_ptr<TcpConn> c(AcceptWebSocket(l, &keys[i]));
+        });
+        WebSocketClient ws;
+        CHECK_EQ(ws.Start(false, kLoopback, port, "/"), COCO_SUCCESS);
+        st_thread_join(server, NULL);
+    }
+    CHECK_EQ(keys[0].size(), 24);
+    CHECK(keys[0] != keys[1]);
     delete l;
 }

@@ -1,6 +1,22 @@
 #include "net/layer7/ws/coco_ws.hpp"
+
+#include <string.h>
+
+#include <random>
+
 #include "utils/base64.hpp"
 #include "utils/sha1.hpp"
+
+// RFC 6455 4.1: a random 16-byte nonce, base64 encoded, chosen anew for each connection.
+static std::string NewWebSocketKey() {
+    static std::random_device rd;
+    unsigned char nonce[16];
+    for (int i = 0; i < 16; i += 4) {
+        uint32_t v = rd();
+        memcpy(nonce + i, &v, 4);
+    }
+    return base64::Encode(nonce, sizeof(nonce));
+}
 
 WebSocketConn::WebSocketConn(WebSocketClient *client, ConnManager *mgr, StreamConn *conn,
                              HttpMessage *r)
@@ -92,6 +108,16 @@ WebSocketClient::~WebSocketClient() {
         delete manager_;
         manager_ = nullptr;
     }
+    // A Send parked in a write returns once it times out; it must not wake up on a freed
+    // client. The check and the wait do not yield, so the last writer's signal is not lost.
+    if (writers_ > 0) {
+        writers_done_ = st_cond_new();
+        while (writers_ > 0) {
+            st_cond_wait(writers_done_);
+        }
+        st_cond_destroy(writers_done_);
+        writers_done_ = nullptr;
+    }
     coco_freep(http_client_);
     stream_ = nullptr;
     if (write_lock_) {
@@ -112,7 +138,7 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
     if (ret != COCO_SUCCESS) {
         return ret;
     }
-    sec_websocket_key_ = base64::Encode((unsigned char *)"1234567890abcdef", 16);
+    sec_websocket_key_ = NewWebSocketKey();
     http_client_->SetMethod("GET");
     http_client_->SetPath(path);
 
@@ -220,6 +246,9 @@ int WebSocketClient::WriteFrame(const uint8_t *buf, size_t len, WebSocketHeader:
 
     if (closed_) {
         CloseSocketIfIdle();
+    }
+    if (writers_ == 0 && writers_done_) {
+        st_cond_signal(writers_done_);
     }
     return ret;
 }
