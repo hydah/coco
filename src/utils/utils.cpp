@@ -13,7 +13,10 @@
 #include "common/error.hpp"
 #include "log/log.hpp"
 
-bool is_ipv6(std::string ip) { return false; }
+bool is_ipv6(std::string ip) {
+    in6_addr addr;
+    return inet_pton(AF_INET6, ip.c_str(), &addr) == 1;
+}
 
 static std::map<std::string, bool> _device_ifs;
 bool net_device_is_internet(in_addr_t addr) {
@@ -444,22 +447,29 @@ int coco_get_peer_port(int fd) {
     return port;
 }
 
+// "ip:port", with IPv6 addresses in brackets.
+static std::string FormatAddr(const sockaddr *addr, socklen_t addrlen) {
+    char host[INET6_ADDRSTRLEN];
+    char port[8];
+    if (getnameinfo(addr, addrlen, host, sizeof(host), port, sizeof(port),
+                    NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
+        return "";
+    }
+    if (addr->sa_family == AF_INET6) {
+        return std::string("[") + host + "]:" + port;
+    }
+    return std::string(host) + ":" + port;
+}
+
 std::string GetRemoteAddr(int fd) {
     sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
     if (getpeername(fd, (sockaddr *)&addr, &addrlen) == -1) {
         return "";
     }
-
-    return GetRemoteAddr(*((sockaddr_in *)&addr));
+    return FormatAddr((const sockaddr *)&addr, addrlen);
 }
 
 std::string GetRemoteAddr(sockaddr_in &in) {
-    static char _ip_convert_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(in.sin_addr), _ip_convert_str, INET_ADDRSTRLEN);
-    auto len = strlen(_ip_convert_str);
-    _ip_convert_str[len] = ':';
-    sprintf(_ip_convert_str + len + 1, "%d", ntohs(in.sin_port));
-
-    return _ip_convert_str;
+    return FormatAddr((const sockaddr *)&in, sizeof(in));
 }

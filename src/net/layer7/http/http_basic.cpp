@@ -27,7 +27,7 @@ int64_t HttpHeader::content_length() {
 
 void HttpHeader::set_content_length(int64_t size) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%ld", size);
+    snprintf(buf, sizeof(buf), "%lld", (long long)size);
     set("Content-Length", buf);
 }
 

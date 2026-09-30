@@ -30,9 +30,9 @@ std::string get_cur_time() {
     }
   }
   char buffer[128];
-  snprintf(buffer, sizeof(buffer), "%d-%02d-%02d %02d:%02d:%02d.%06lu",
+  snprintf(buffer, sizeof(buffer), "%d-%02d-%02d %02d:%02d:%02d.%06ld",
            1900 + local.tm_year, 1 + local.tm_mon, local.tm_mday, local.tm_hour,
-           local.tm_min, local.tm_sec, tv.tv_usec);
+           local.tm_min, local.tm_sec, (long)tv.tv_usec);
   return std::string(buffer);
 }
 

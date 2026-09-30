@@ -13,8 +13,8 @@
 static int ProcessRequest(HttpServeMux *mux, HttpResponseWriter *w, HttpMessage *r) {
     int ret = COCO_SUCCESS;
 
-    coco_trace("HTTP %s %s, content-length=%ld", r->method_str().c_str(), r->url().c_str(),
-               r->content_length());
+    coco_trace("HTTP %s %s, content-length=%lld", r->method_str().c_str(), r->url().c_str(),
+               (long long)r->content_length());
 
     if ((ret = mux->serve_http(w, r)) != COCO_SUCCESS) {
         if (!coco_is_client_gracefully_close(ret)) {
@@ -208,8 +208,8 @@ int HttpClient::Connect() {
     // open socket.
     auto conn = DialTcp(host_, port_, (int)timeout_us_);
     if (conn == nullptr) {
-        coco_warn("http client failed, server=%s, port=%d, timeout=%ld", host_.c_str(), port_,
-                  timeout_us_);
+        coco_warn("http client failed, server=%s, port=%d, timeout=%lld", host_.c_str(), port_,
+                  (long long)timeout_us_);
         return -1;
     }
     coco_info("connect to server success. server=%s, port=%d", host_.c_str(), port_);

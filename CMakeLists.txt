@@ -33,7 +33,11 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(ARCH_X86_64 TRUE)
 endif()
 
-set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -fno-ident -g -ggdb")
+set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -g -ggdb")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # Clang ignores it and warns on every file.
+  list(APPEND CXX_FLAGS "-fno-ident")
+endif()
 set(CXX_FLAGS "${CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(abspath $<))\"'")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
  

@@ -184,6 +184,28 @@ COTEST(TcpServerServesTls) {
     CHECK(ReadN(ssl.get(), 8) == "over tls");
 }
 
+// An IPv6 literal listens on IPv6, and peer addresses are formatted as [addr]:port.
+COTEST(TcpServerIpv6) {
+    const int port = 19199;
+    std::string remote;
+    TcpServer server([&remote](StreamConn &conn) {
+        remote = conn.RemoteAddr();
+        return Echo(conn);
+    });
+    CHECK_EQ(server.ListenAndServe("::1", port), COCO_SUCCESS);
+
+    std::unique_ptr<TcpConn> c(DialTcp("::1", port, kConnectTimeoutUs));
+    CHECK(c != nullptr);
+    if (!c) {
+        return;
+    }
+    c->SetTimeout(kClientTimeoutUs);
+    CHECK(WriteAll(c.get(), "v6"));
+    CHECK(ReadN(c.get(), 2) == "v6");
+    CHECK(remote.compare(0, 6, "[::1]:") == 0);
+    CHECK(c->RemoteAddr() == "[::1]:" + std::to_string(port));
+}
+
 COTEST(TcpServerServeTwiceFails) {
     TcpServer server(Echo);
     CHECK_EQ(server.ListenAndServe(kLoopback, 19197), COCO_SUCCESS);

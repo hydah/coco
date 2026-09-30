@@ -37,6 +37,7 @@ set(COCO_TEST_CASES
     TcpServerHandlerSeesShouldStop
     TcpServerServesTls
     TcpServerServeTwiceFails
+    TcpServerIpv6
     WsEncodeLengthForms
     WsEncodeMasksCopyOnly
     WsDecodeFramesSplitAnywhere

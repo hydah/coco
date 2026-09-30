@@ -23,7 +23,10 @@ int main() {
 
     WebSocketClient ws_client;
     ws_client.SetMessageHandler(OnMessage);
-    ws_client.Start(true, server_ip, port, "/");
+    if ((ret = ws_client.Start(true, server_ip, port, "/")) != COCO_SUCCESS) {
+        coco_error("websocket connect failed. ret=%d", ret);
+        return ret;
+    }
 
     std::string msg = "hello ws";
     std::cout << "send hello ws" << std::endl;
