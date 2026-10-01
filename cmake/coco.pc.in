@@ -1,0 +1,11 @@
+prefix=@COCO_PC_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: coco
+Description: Coroutine networking library on State Threads: TCP, UDP, TLS, HTTP/1.1, WebSocket
+Version: @PROJECT_VERSION@
+Requires.private: @COCO_PC_REQUIRES_PRIVATE@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lcoco
+Libs.private:@COCO_PC_LIBS_PRIVATE@

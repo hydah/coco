@@ -4,3 +4,6 @@ build/
 lib/
 thirdparty/temp
 thirdparty/openssl-*.tar.gz
+dist/
+.harness/
+AGENTS.md

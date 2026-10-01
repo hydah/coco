@@ -1,15 +1,10 @@
-// #include "coco/net/tcp_stack.hpp"
-// #include "coco/net/server.hpp"
 #include <iostream>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "log/log.hpp"
-#include "net/coco_socket.hpp"
-#include "net/layer4/coco_tcp.hpp"
+#include "coco/coco.h"
 
 using namespace std;
+using namespace coco;
 
 string server_ip = "127.0.0.1";
 int port = 8080;
@@ -60,35 +55,33 @@ int PingPongClient::read(char *buf, int s, ssize_t *nread) {
 }
 
 int main() {
-  int ret = COCO_SUCCESS;
-
-  CocoInit();
-
-  PingPongClient *client = new PingPongClient(server_ip, port, 1000);
-  ret = client->connect();
-  if (ret != COCO_SUCCESS) {
-    coco_error("connect server: %s:%d failed", server_ip.c_str(), port);
-    return ret;
-  }
-
-  char buf[1024] = "hello coco";
-  ssize_t nread = 10;
-  while (true) {
-    ret = client->write(buf, nread);
-    if (ret != 0) {
-      coco_warn("write error");
-      break;
+  // Ctrl-C ends the loop: it fails the read or sleep in progress and CocoShouldStop() turns
+  // true, so the connection is closed properly.
+  return CocoRun([]() -> int {
+    std::unique_ptr<PingPongClient> client(new PingPongClient(server_ip, port, 1000));
+    int ret = client->connect();
+    if (ret != COCO_SUCCESS) {
+      coco_error("connect server: %s:%d failed", server_ip.c_str(), port);
+      return ret;
     }
-    coco_dbg("write %s", buf);
-    ret = client->read(buf, sizeof(buf), &nread);
-    if (ret != 0) {
-      coco_warn("read error");
-      break;
-    }
-    coco_trace("read %s", buf);
-    CocoSleepMs(2000);
-  }
 
-  delete client;
-  return 0;
+    char buf[1024] = "hello coco";
+    ssize_t nread = 10;
+    while (!CocoShouldStop()) {
+      ret = client->write(buf, nread);
+      if (ret != 0) {
+        coco_warn("write error");
+        break;
+      }
+      coco_dbg("write %s", buf);
+      ret = client->read(buf, sizeof(buf), &nread);
+      if (ret != 0) {
+        coco_warn("read error");
+        break;
+      }
+      coco_trace("read %s", buf);
+      CocoSleepMs(2000);
+    }
+    return 0;
+  });
 }

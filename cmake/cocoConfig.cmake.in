@@ -1,0 +1,21 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+if(@COCO_USE_SYSTEM_OPENSSL@)
+  find_dependency(OpenSSL)
+elseif(NOT @COCO_SHARED@ AND NOT TARGET coco::openssl_crypto)
+  # The static OpenSSL coco was built with, installed next to libst.a.
+  add_library(coco::openssl_crypto STATIC IMPORTED)
+  set_target_properties(coco::openssl_crypto PROPERTIES
+    IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/coco/libcrypto.a"
+    INTERFACE_LINK_LIBRARIES "Threads::Threads;@CMAKE_DL_LIBS@")
+  add_library(coco::openssl_ssl STATIC IMPORTED)
+  set_target_properties(coco::openssl_ssl PROPERTIES
+    IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/coco/libssl.a"
+    INTERFACE_LINK_LIBRARIES coco::openssl_crypto)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/cocoTargets.cmake")
+check_required_components(coco)

@@ -3,12 +3,16 @@
 #include <memory>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/tls/coco_tls.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/tls/coco_tls.hpp"
+#include "coco/server/coco_tcp_server.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace {
 
@@ -116,7 +120,7 @@ COTEST(TlsReadFullyReturnsPlaintext) {
             return c.Read(&b, 1, &n);
         },
         TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> ssl = DialTls(port);
     CHECK(ssl != nullptr);
@@ -162,7 +166,7 @@ COTEST(TlsConcurrentWriters) {
             return read_err;
         },
         TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> ssl = DialTls(port);
     CHECK(ssl != nullptr);
@@ -198,7 +202,7 @@ COTEST(TlsConcurrentWriters) {
 COTEST(TlsOverAnyStreamConn) {
     const int port = 19213;
     TcpServer server(Echo, TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> tcp;
     CHECK_EQ(DialTcp(kLoopback, port, kTimeoutUs, &tcp), COCO_SUCCESS);
@@ -231,7 +235,7 @@ COTEST(TlsOverAnyStreamConn) {
 COTEST(TlsDialerOverAnyDialer) {
     const int port = 19216;
     TcpServer server(Echo, TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     CountingConn *counting = nullptr;
     StreamDialer tcp = TcpDialer();
@@ -264,7 +268,7 @@ COTEST(TlsDialerOverAnyDialer) {
 COTEST(TlsHandshakesOnFirstUse) {
     const int port = 19214;
     TcpServer server(Echo, TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> tls = DialTlsLazy(port);
     CHECK(tls != nullptr);
@@ -284,7 +288,7 @@ COTEST(TlsHandshakesOnFirstUse) {
 COTEST(TlsSilentPeerDoesNotBlockAccept) {
     const int port = 19215;
     TcpServer server(Echo, TlsOptions());
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> silent;
     CHECK_EQ(DialTcp(kLoopback, port, kTimeoutUs, &silent), COCO_SUCCESS);

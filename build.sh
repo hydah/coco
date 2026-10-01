@@ -11,6 +11,7 @@
 #   -j, --jobs N        Number of parallel jobs (default: auto-detect)
 #   -t, --test          Run tests after building
 #   -i, --install       Install after building
+#   --prefix DIR        Install prefix (default: ./dist)
 #   -v, --verbose       Verbose output
 #   --no-examples       Don't build examples
 
@@ -29,6 +30,7 @@ CLEAN_BUILD=false
 JOBS=""
 RUN_TESTS=false
 INSTALL=false
+PREFIX="$(pwd)/dist"
 VERBOSE=false
 BUILD_EXAMPLES=true
 CMAKE_CMD="cmake"
@@ -102,6 +104,7 @@ OPTIONS:
     -j, --jobs N        Number of parallel jobs (default: auto-detect)
     -t, --test          Run tests after building
     -i, --install       Install after building
+    --prefix DIR        Install prefix (default: ./dist)
     -v, --verbose       Verbose output
     --no-examples       Don't build examples
 
@@ -141,6 +144,10 @@ parse_args() {
             -i|--install)
                 INSTALL=true
                 shift
+                ;;
+            --prefix)
+                PREFIX="$2"
+                shift 2
                 ;;
             -v|--verbose)
                 VERBOSE=true
@@ -337,7 +344,7 @@ configure_build() {
     cd build
 
     # Configure CMake
-    CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+    CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_INSTALL_PREFIX=$PREFIX"
 
     if [ "$BUILD_EXAMPLES" = false ]; then
         CMAKE_ARGS="$CMAKE_ARGS -DCOCO_BUILD_EXAMPLES=OFF"
@@ -436,7 +443,7 @@ show_summary() {
     echo -e "${BLUE}Parallel Jobs:${NC} $JOBS"
     echo -e "${BLUE}Build Examples:${NC} $BUILD_EXAMPLES"
     echo -e "${BLUE}Run Tests:${NC} $RUN_TESTS"
-    echo -e "${BLUE}Install:${NC} $INSTALL"
+    echo -e "${BLUE}Install:${NC} $INSTALL ($PREFIX)"
     echo -e "${GREEN}========================================${NC}"
 
     # Show available binaries

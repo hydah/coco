@@ -1,3 +1,17 @@
+# Each example only links coco::coco, as a program using an installed coco would. With
+# -DCOCO_INSTALL_EXAMPLES=ON it is installed under bin/examples/<its directory>/.
+function(coco_example name)
+  add_executable(${name} ${ARGN})
+  set_target_properties(${name} PROPERTIES CXX_STANDARD 11 CXX_EXTENSIONS OFF)
+  target_link_libraries(${name} coco::coco)
+  coco_set_warnings(${name})
+  if(COCO_INSTALL_EXAMPLES)
+    get_filename_component(dir ${CMAKE_CURRENT_SOURCE_DIR} NAME)
+    install(TARGETS ${name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/examples/${dir})
+  endif()
+endfunction()
+
 add_subdirectory(pingpong)
 add_subdirectory(http-server)
 add_subdirectory(websocket)
+add_subdirectory(rtmp)

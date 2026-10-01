@@ -1,10 +1,9 @@
 #include <iostream>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer7/http/coco_http.hpp"
-#include "net/tls/coco_tls.hpp"
+#include "coco/coco.h"
+
+using namespace coco;
 
 static void Print(int ret, HttpResponse *resp) {
     std::string body;
@@ -17,7 +16,6 @@ static void Print(int ret, HttpResponse *resp) {
 
 // Talks to http_server: GET, then POST on the same pooled connection.
 int main(int argc, char **argv) {
-    CocoInit();
     std::string base = argc > 1 ? argv[1] : "https://127.0.0.1:9082";
 
     HttpClient client;

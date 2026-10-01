@@ -3,14 +3,18 @@
 #include <memory>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/layer7/ws/coco_ws.hpp"
-#include "server/coco_http_server.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/layer7/ws/coco_ws.hpp"
+#include "coco/server/coco_http_server.hpp"
 #include "test_util.hpp"
-#include "utils/base64.hpp"
-#include "utils/sha1.hpp"
+#include "coco/utils/base64.hpp"
+#include "coco/utils/sha1.hpp"
+
+using namespace coco;
 
 namespace {
 
@@ -58,7 +62,7 @@ COTEST(HttpServerDeletedWhileAccepting) {
     mux.Handle("/", new OkHandler());
 
     HttpServer *server = new HttpServer(&mux);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
+    CHECK_EQ(server->Start(kLoopback, port), 0);
     CocoSleepMs(5);
 
     delete server;
@@ -75,7 +79,7 @@ COTEST(HttpServerDeletedWithOpenKeepAliveConn) {
     mux.Handle("/", new OkHandler());
 
     HttpServer *server = new HttpServer(&mux);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
+    CHECK_EQ(server->Start(kLoopback, port), 0);
 
     std::unique_ptr<TcpConn> client;
     DialTcp(kLoopback, port, kConnectTimeoutUs, &client);
@@ -101,7 +105,7 @@ COTEST(HttpServerClosesNonKeepAliveConn) {
     mux.Handle("/", new OkHandler());
 
     HttpServer *server = new HttpServer(&mux);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
+    CHECK_EQ(server->Start(kLoopback, port), 0);
 
     std::unique_ptr<TcpConn> client;
     DialTcp(kLoopback, port, kConnectTimeoutUs, &client);

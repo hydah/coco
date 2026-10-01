@@ -3,10 +3,14 @@
 #include <functional>
 #include <string>
 
-#include "base/coroutine.hpp"
-#include "coco_api.h"
-#include "common/error.hpp"
+#include "st.h"
+
+#include "coco/base/coroutine.hpp"
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace {
 

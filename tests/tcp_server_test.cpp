@@ -3,12 +3,16 @@
 #include <memory>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/tls/coco_tls.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/tls/coco_tls.hpp"
+#include "coco/server/coco_tcp_server.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace {
 
@@ -64,7 +68,7 @@ bool PeerClosed(TcpConn *c) {
 COTEST(TcpServerEchoes) {
     const int port = 19191;
     TcpServer server(Echo);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> a(Dial(port));
     std::unique_ptr<TcpConn> b(Dial(port));
@@ -84,7 +88,7 @@ COTEST(TcpServerEchoes) {
 COTEST(TcpServerStopClosesOpenConns) {
     const int port = 19192;
     TcpServer server(Echo);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> client(Dial(port));
     CHECK(client != nullptr);
@@ -107,7 +111,7 @@ COTEST(TcpServerHandlerReturnClosesConn) {
         ++calls;
         return -1;
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     for (int i = 0; i < 2; ++i) {
         std::unique_ptr<TcpConn> client(Dial(port));
@@ -125,7 +129,7 @@ COTEST(TcpServerHandlerReturnClosesConn) {
 COTEST(TcpServerDeletedWhileAccepting) {
     const int port = 19194;
     TcpServer *server = new TcpServer(Echo);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server->Start(kLoopback, port), COCO_SUCCESS);
     CocoSleepMs(5);
 
     delete server;
@@ -149,7 +153,7 @@ COTEST(TcpServerHandlerSeesShouldStop) {
         saw_stop = true;
         return COCO_SUCCESS;
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> client(Dial(port));
     CHECK(client != nullptr);
@@ -169,7 +173,7 @@ COTEST(TcpServerServesTls) {
     opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
     opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
     TcpServer server(Echo, opt);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> tcp = Dial(port);
     CHECK(tcp != nullptr);
@@ -184,14 +188,14 @@ COTEST(TcpServerServesTls) {
     CHECK(ReadN(&tls, 8) == "over tls");
 }
 
-// A key or certificate that does not load fails Serve() instead of every handshake.
+// A key or certificate that does not load fails Start() instead of every handshake.
 COTEST(TcpServerRejectsBadTlsFiles) {
     const int port = 19190;
     TcpServerOptions opt;
     opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/missing.key";
     opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
     TcpServer server(Echo, opt);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), ERROR_HTTPS_KEY_CRT);
+    CHECK_EQ(server.Start(kLoopback, port), ERROR_HTTPS_KEY_CRT);
 
     std::unique_ptr<TcpConn> refused;
     CHECK(DialTcp(kLoopback, port, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
@@ -205,7 +209,7 @@ COTEST(TcpServerIpv6) {
         remote = conn.RemoteAddr();
         return Echo(conn);
     });
-    CHECK_EQ(server.ListenAndServe("::1", port), COCO_SUCCESS);
+    CHECK_EQ(server.Start("::1", port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> c;
     CHECK_EQ(DialTcp("::1", port, kConnectTimeoutUs, &c), COCO_SUCCESS);
@@ -221,8 +225,8 @@ COTEST(TcpServerIpv6) {
 
 COTEST(TcpServerServeTwiceFails) {
     TcpServer server(Echo);
-    CHECK_EQ(server.ListenAndServe(kLoopback, 19197), COCO_SUCCESS);
-    CHECK(server.ListenAndServe(kLoopback, 19198) != COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, 19197), COCO_SUCCESS);
+    CHECK(server.Start(kLoopback, 19198) != COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> refused;
     CHECK(DialTcp(kLoopback, 19198, kConnectTimeoutUs, &refused) != COCO_SUCCESS);

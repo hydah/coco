@@ -1,87 +1,60 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.14)
 
 # Must be set before project(); also passed to the OpenSSL build so all objects agree.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(coco C CXX)
+project(coco VERSION 0.1.0 LANGUAGES C CXX)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE "Debug")
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  set(COCO_TOP_LEVEL ON)
+else()
+  set(COCO_TOP_LEVEL OFF)
 endif()
 
-# only build examples if this is the main project
-if(CMAKE_PROJECT_NAME STREQUAL "coco")
-  option(COCO_BUILD_EXAMPLES "Build coco examples" ON)
-  option(COCO_BUILD_TESTS "Build coco tests" ON)
-endif()
+option(COCO_BUILD_EXAMPLES "Build coco examples" ${COCO_TOP_LEVEL})
+option(COCO_BUILD_TESTS "Build coco tests" ${COCO_TOP_LEVEL})
+# A parent project that embeds coco decides itself what gets installed.
+option(COCO_INSTALL "Generate the install rules of the library" ${COCO_TOP_LEVEL})
+option(COCO_INSTALL_EXAMPLES "Install the example programs, under bin/examples/" OFF)
+option(COCO_USE_SYSTEM_OPENSSL "Link the OpenSSL found by find_package instead of building one" OFF)
 option(COCO_ENABLE_ASAN "Build with AddressSanitizer" OFF)
 
-# Platform detection and configuration
-if(APPLE)
-    # Build only for native architecture on macOS to avoid SDK issues
-    add_definitions(-D__APPLE__)
-    add_definitions(-D_DARWIN_C_SOURCE)
-elseif(UNIX AND NOT APPLE)
-    add_definitions(-D_GNU_SOURCE)
-    add_definitions(-D_REENTRNT)
+include(GNUInstallDirs)
+
+if(COCO_TOP_LEVEL)
+  if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+  endif()
+  set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 endif()
 
-# Architecture detection
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-    set(ARCH_ARM64 TRUE)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    set(ARCH_X86_64 TRUE)
-endif()
-
-set(CXX_FLAGS "$ENV{CXXFLAGS} -std=c++11 -O2 -Wall -g -ggdb")
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  # Clang ignores it and warns on every file.
-  list(APPEND CXX_FLAGS "-fno-ident")
-endif()
-set(CXX_FLAGS "${CXX_FLAGS} -D__FILENAME__='\"$(subst ${CMAKE_SOURCE_DIR}/,,$(abspath $<))\"'")
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
- 
-# Architecture-specific flags
-if(NOT APPLE AND CMAKE_BUILD_BITS EQUAL 32)
-    list(APPEND CXX_FLAGS "-m32")
-endif()
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-  list(APPEND CXX_FLAGS "-Wno-null-dereference")
-  list(APPEND CXX_FLAGS "-Wno-sign-conversion")
-  list(APPEND CXX_FLAGS "-Wno-unused-local-typedef")
-  list(APPEND CXX_FLAGS "-Wthread-safety")
-  list(REMOVE_ITEM CXX_FLAGS "-rdynamic")
-endif()
 if(COCO_ENABLE_ASAN)
-  list(APPEND CXX_FLAGS "-fsanitize=address" "-fno-omit-frame-pointer")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+  add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address)
 endif()
-string(REPLACE ";" " " CMAKE_CXX_FLAGS "${CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
-string(TOUPPER ${CMAKE_BUILD_TYPE} BUILD_TYPE)
-message(STATUS "CXX_FLAGS = " ${CMAKE_CXX_FLAGS} " " ${CMAKE_CXX_FLAGS_${BUILD_TYPE}})
-
-set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
-set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
+# Warnings for coco's own targets; never forced on a parent project.
+function(coco_set_warnings target)
+  target_compile_options(${target} PRIVATE -Wall)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${target} PRIVATE -fno-ident)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(${target} PRIVATE
+      -Wno-null-dereference -Wno-sign-conversion -Wno-unused-local-typedef -Wthread-safety)
+  endif()
+endfunction()
 
 set(THIRDPARTY ${PROJECT_SOURCE_DIR}/thirdparty)
-set(ST ${THIRDPARTY}/st)
 
-# openssl
+find_package(Threads REQUIRED)
 include(cmake/openssl.cmake)
-# state thread
 include(cmake/st.cmake)
 
-# http parser
-exec_program(${CMAKE_COMMAND} ARGS -E copy ${THIRDPARTY}/http-parser/http_parser.h ${PROJECT_SOURCE_DIR}/lib/http-parser/http_parser.h)
-include_directories(${PROJECT_SOURCE_DIR}/lib)
-include_directories(${PROJECT_SOURCE_DIR}/src)
-
-# coco lib
 add_subdirectory(src)
 
-# coco example
 if(COCO_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()

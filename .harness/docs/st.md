@@ -1,14 +1,14 @@
-# State Threads 与 src/base 的实现
+# State Threads 与 src/coco/base 的实现
 
-这篇讲两层东西：State Threads（ST）怎样让同步写法的 I/O 在阻塞时切走、就绪时切回；`src/base` 怎样在 ST 之上加一层所有权规则，让监听协程由调用方停止和释放，连接协程在自己的栈上释放自己。使用上的规则（业务代码该怎么写、哪些事不能做）见 [协程与连接管理](coroutine.md)。
+这篇讲两层东西：State Threads（ST）怎样让同步写法的 I/O 在阻塞时切走、就绪时切回；`src/coco/base` 怎样在 ST 之上加一层所有权规则，让监听协程由调用方停止和释放，连接协程在自己的栈上释放自己。使用上的规则（业务代码该怎么写、哪些事不能做）见 [协程与连接管理](coroutine.md)。
 
 相关代码：
 
 - `thirdparty/st/sched.c`：创建、调度、中断、退出、join
 - `thirdparty/st/io.c`：`st_read` / `st_write` / `st_poll`
 - `thirdparty/st/sync.c`：`st_usleep`、条件变量
-- `src/base/coroutine.hpp`、`src/base/coroutine.cpp`：`CoroutineHandler`、`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
-- `src/base/coroutine_mgr.hpp`、`src/base/coroutine_mgr.cpp`：`ConnManager`
+- `src/coco/base/coroutine.hpp`、`src/coco/base/coroutine.cpp`：`CoroutineHandler`、`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
+- `src/coco/base/coroutine_mgr.hpp`、`src/coco/base/coroutine_mgr.cpp`：`ConnManager`
 
 ## ST：协程怎么跑起来
 
@@ -108,11 +108,11 @@ _ST_SWITCH_CONTEXT(thread);          /* 再也不回来 */
 - 可 join 的线程先变成僵尸，等 `st_thread_join` 把它叫回来之后，才继续释放栈。没有人 join 的话，这段栈会一直占着。
 - 不可 join 的线程直接把栈交回空闲链表，然后切走。
 
-两种情况下，栈都是在协程函数返回之后才释放的，而且从交回栈到切走之间没有任何分配操作。`src/base` 让连接在自己的栈上释放自己，依据就在这里。
+两种情况下，栈都是在协程函数返回之后才释放的，而且从交回栈到切走之间没有任何分配操作。`src/coco/base` 让连接在自己的栈上释放自己，依据就在这里。
 
 `st_thread_join` 还有两条限制：不能 join 自己（返回 `EDEADLK`）；等待期间如果调用方被中断，会返回 `-1` / `EINTR`，而目标协程这时还没有退出。
 
-## src/base 的三层
+## src/coco/base 的三层
 
 ```mermaid
 flowchart LR
@@ -181,7 +181,7 @@ st_thread_exit()                    交回栈，切走
 
 `coroutine_fun` 必须是静态函数，因为 ST 只接受 C 风格的 `void *(*)(void *)`。它把 `void *` 转回 `CoCoroutine *`，再经 handler 的虚函数分派到业务代码。这里是两层模板方法：`ConnRoutine::Cycle()` 做通用的日志和错误归一，`DoCycle()` 留给派生类。`TcpServer::Session` 把 `DoCycle()` 再转成一次 `std::function` 调用，所以业务代码不用继承。
 
-处理函数不是 `CoroutineHandler`，拿不到 `ShouldTermCycle()`。`coroutine_fun` 因此把当前的 `CoCoroutine *` 存进 ST 的线程私有数据（`CocoInit()` 里 `st_key_create` 创建的键），`CocoShouldStop()` 取出它，读的是同一个 `trd_err_`。
+处理函数不是 `CoroutineHandler`，拿不到 `ShouldTermCycle()`。`coroutine_fun` 因此把当前的 `CoCoroutine *` 存进 ST 的线程私有数据（`CocoInit()` 里 `st_key_create` 创建的键；`CocoRun` 的主协程不是 `CoCoroutine`，这个键上没有值，`CocoShouldStop()` 对它另读 `CocoRun` 的标志），`CocoShouldStop()` 取出它，读的是同一个 `trd_err_`。
 
 ```cpp
 void *CoCoroutine::coroutine_fun(void *arg) {
@@ -336,6 +336,6 @@ sequenceDiagram
 - `DoCycle()` 和 `TcpServer` 的处理函数都必须响应中断。中断标志只生效一次，`CoCoroutine::interrupted` 也只允许中断一次。拿到 `EINTR` 以后如果忽略它再去读，就会一直阻塞，`Shutdown()` 也会跟着一直等。循环条件里加上 `ShouldTermCycle()`（处理函数里用 `CocoShouldStop()`），出错就返回。
 - 不能在某条连接里调用管理它的那个 manager 的 `Shutdown()`，也不能在连接里 `delete` 这个 manager：它会等所有连接退出，其中包括它自己。
 - `CoroutineContext` 用全局的 `std::map<st_thread_t, int>` 存协程 ID，每次查询都查一次 map。`CocoShouldStop()` 已经改用 ST 自带的 `st_key_create` / `st_thread_setspecific`，协程 ID 还没有换过去。
-- 一个进程只有一份 ST，跑在调用 `CocoInit()` 的那条内核线程上。要用满多核需要多进程，或者每个线程各自 `st_init()` 一份；所有对象都不能跨线程使用。
+- 一个进程只有一份 ST，跑在初始化它的那条内核线程上（显式调用 `CocoInit()`，或第一次建协程、建 socket、`CocoSleepMs` 时自动初始化）。要用满多核需要多进程，或者每个线程各自 `st_init()` 一份；所有对象都不能跨线程使用。
 
 对应的测试在 `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp` 和 `tests/lifecycle_test.cpp`，跑法见 [构建](build.md) 的“测试”一节。

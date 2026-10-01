@@ -7,10 +7,18 @@ add_executable(coco_tests
     ws_server_test.cpp
     tls_test.cpp
     http_test.cpp
+    runtime_test.cpp
+    rtmp_test.cpp
 )
-target_include_directories(coco_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# The tests call ST directly. They only take its header: a static libcoco brings libst.a
+# along, and a shared one contains it, so linking st here would make a second scheduler.
+target_include_directories(coco_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    $<TARGET_PROPERTY:st,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_definitions(coco_tests PRIVATE COCO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
-target_link_libraries(coco_tests coco dl)
+set_target_properties(coco_tests PROPERTIES CXX_STANDARD 11 CXX_EXTENSIONS OFF)
+target_link_libraries(coco_tests coco)
+coco_set_warnings(coco_tests)
 
 # One process per case, so a crash or hang is reported against that case only.
 set(COCO_TEST_CASES
@@ -86,6 +94,31 @@ set(COCO_TEST_CASES
     HttpClientResponseFraming
     HttpClientRejectsBadUrls
     HttpHelpers
+    RuntimeInitIsIdempotent
+    RuntimeShutdownWakesWaiters
+    RuntimeSignalWakesWaiter
+    TcpServerListenAndServeBlocksUntilStop
+    TcpServerListenAndServeStopsOnShutdown
+    TcpServerListenAndServeReturnsListenError
+    TcpServerStartAfterStopFails
+    HttpServerListenAndServeStopsOnShutdownFromHandler
+    CocoRunReturnsWhatFnReturns
+    CocoRunRejectsNesting
+    CocoShouldStopIsFalseOutsideCocoRun
+    CocoRunShutdownEndsSleepLoop
+    CocoRunSignalEndsBlockingRead
+    CocoRunStopsBlockingListenAndServe
+    CocoRunAfterShutdownStopsAtOnce
+    TcpServerStopClosesListener
+    TcpServerConcurrentStopsBothReturnWhenDown
+    RuntimeSignalStopsServerProcess
+    RuntimeSecondSignalEndsStuckProcess
+    RuntimeIgnoredSignalStaysIgnored
+    RtmpDigestKnownAnswer
+    RtmpAmf0RoundTrip
+    RtmpChunksRoundTrip
+    RtmpUrlParse
+    RtmpPublishAndPlay
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

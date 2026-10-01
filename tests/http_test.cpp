@@ -8,13 +8,15 @@
 #include <set>
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/layer7/http/coco_http.hpp"
-#include "server/coco_http_server.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/layer7/http/coco_http.hpp"
+#include "coco/server/coco_http_server.hpp"
+#include "coco/server/coco_tcp_server.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace {
 
@@ -143,7 +145,7 @@ COTEST(HttpSmallResponseHasContentLength) {
         w.Write("hello ");
         w.Write("world");
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send(Get("/")));
@@ -175,7 +177,7 @@ COTEST(HttpLargeResponseIsChunked) {
         w.Write(big);
     });
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send(Get("/big") + Get("/flush") + Get("/sized")));
@@ -191,7 +193,7 @@ COTEST(HttpLargeResponseIsChunked) {
 COTEST(HttpPipelinedRequests) {
     const int port = 19303;
     HttpServer server([](HttpResponseWriter &w, HttpRequest &r) { w.Write(r.path); });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send(Get("/a") + Get("/b") + Get("/c", "Connection: close\r\n")));
@@ -214,7 +216,7 @@ COTEST(HttpRequestBodies) {
     });
     mux.HandleFunc("POST /ignore", [](HttpResponseWriter &w, HttpRequest &r) { w.Write("ok"); });
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send("POST /echo HTTP/1.1\r\nHost: t\r\nContent-Length: 5\r\n\r\nhello"));
@@ -235,7 +237,7 @@ COTEST(HttpExpectContinue) {
         r.body.ReadAll(&body);
         w.Write(body);
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send("POST / HTTP/1.1\r\nHost: t\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n"));
@@ -252,7 +254,7 @@ COTEST(HttpHeadRequest) {
     HttpServeMux mux;
     mux.HandleFunc("GET /doc", [](HttpResponseWriter &w, HttpRequest &r) { w.Write("content"); });
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send("HEAD /doc HTTP/1.1\r\nHost: t\r\n\r\n" + Get("/doc")));
@@ -269,7 +271,7 @@ COTEST(HttpBadRequests) {
     HttpServeOptions opt;
     opt.max_header_bytes = 1024;
     HttpServer server([&calls](HttpResponseWriter &w, HttpRequest &r) { ++calls; }, opt);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     struct Case {
         std::string request;
@@ -294,7 +296,7 @@ COTEST(HttpBadRequests) {
 COTEST(HttpOneZero) {
     const int port = 19308;
     HttpServer server([](HttpResponseWriter &w, HttpRequest &r) { w.Write("x"); });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
     {
         RawConn c(port);
         CHECK(c.Send("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"));
@@ -333,7 +335,7 @@ COTEST(HttpMuxRouting) {
     CHECK(mux.HandleFunc("no-slash", reply("x")) != COCO_SUCCESS);
     CHECK(mux.HandleFunc("/a/{x...}/b", reply("x")) != COCO_SUCCESS);
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     struct Case {
         std::string request;
@@ -382,7 +384,7 @@ COTEST(HttpMuxMethodNotAllowed) {
     mux.HandleFunc("GET /users/{id}", ok);
     mux.HandleFunc("DELETE /users/{id}", ok);
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send("PUT /users/7 HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n"));
@@ -404,7 +406,7 @@ COTEST(HttpRequestFields) {
                r.Query().Get("c") + "|" + r.header.Get("x-custom") + "|" + r.host;
         CHECK(!r.remote_addr.empty());
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawConn c(port);
     CHECK(c.Send(Get("/p%41th?a=1&b=x%20y&c=1+2", "X-Custom: v\r\n")));
@@ -423,7 +425,7 @@ COTEST(HttpClientReusesConnection) {
         w.Header().Set("X-Method", r.method);
         w.Write(body.empty() ? r.path : body);
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     HttpClient client(kTimeoutUs);
     for (int i = 0; i < 5; ++i) {
@@ -459,7 +461,7 @@ COTEST(HttpClientRetriesStaleConnection) {
         CocoSleepMs(10);
         return 0;
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     HttpClient client(kTimeoutUs);
     for (int i = 0; i < 3; ++i) {
@@ -489,7 +491,7 @@ COTEST(HttpClientFollowsRedirects) {
         w.Write(r.method + " " + r.url);
     });
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     HttpClient client(kTimeoutUs);
     std::unique_ptr<HttpResponse> resp;
@@ -519,7 +521,7 @@ COTEST(HttpClientResponseFraming) {
         conn.Write((void *)rsp.data(), rsp.size(), nullptr);
         return 0;
     });
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     HttpClient client(kTimeoutUs);
     std::unique_ptr<HttpResponse> resp;

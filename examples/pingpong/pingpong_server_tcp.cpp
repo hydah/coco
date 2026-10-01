@@ -1,11 +1,9 @@
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "log/log.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "coco/coco.h"
 
 using namespace std;
+using namespace coco;
 
 string local_ip = "127.0.0.1";
 int port = 8080;
@@ -26,14 +24,11 @@ int PingPong(StreamConn &conn) {
 
 int main() {
   log_level = log_dbg;
-  CocoInit();
-
   TcpServer server(PingPong);
+  // Serves until Ctrl-C.
   if (server.ListenAndServe(local_ip, port) != COCO_SUCCESS) {
     coco_error("create listen socket failed");
     return -1;
   }
-
-  CocoLoopMs(1000);
   return 0;
 }

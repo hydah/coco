@@ -1,13 +1,7 @@
-add_executable(http_server http_server.cpp)
-target_link_libraries(http_server coco dl)
-install(TARGETS http_server RUNTIME DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/http/)
-install(FILES ${PROJECT_SOURCE_DIR}/examples/http-server/server.key
-    DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/http/
-    )
-install(FILES ${PROJECT_SOURCE_DIR}/examples/http-server/server.crt
-    DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/http/
-    )
+coco_example(http_server http_server.cpp)
+coco_example(http_client http_client.cpp)
 
-add_executable(http_client http_client.cpp)
-target_link_libraries(http_client coco dl)
-install(TARGETS http_client RUNTIME DESTINATION ${PROJECT_SOURCE_DIR}/dist/bin/examples/http/)
+# http_server reads ./server.key and ./server.crt, so they go next to it.
+if(COCO_INSTALL_EXAMPLES)
+  install(FILES server.key server.crt DESTINATION ${CMAKE_INSTALL_BINDIR}/examples/http-server)
+endif()

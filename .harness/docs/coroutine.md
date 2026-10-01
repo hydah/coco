@@ -2,20 +2,20 @@
 
 coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻塞点不进内核睡眠，而是让出当前协程，由 State Threads（ST）在 epoll（Linux）或 kqueue（macOS）上等到 I/O 就绪再切回来。业务代码写成普通的顺序调用。
 
-这篇讲使用规则。ST 内部怎么调度、`Cycle()` 怎么被调用到、`CoCoroutine` 各个状态字段的含义，见 [State Threads 与 src/base 的实现](st.md)。
+这篇讲使用规则。ST 内部怎么调度、`Cycle()` 怎么被调用到、`CoCoroutine` 各个状态字段的含义，见 [State Threads 与 src/coco/base 的实现](st.md)。
 
 相关代码：
 
-- `src/base/coroutine.hpp`、`src/base/coroutine.cpp`：`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
-- `src/base/coroutine_mgr.hpp`、`src/base/coroutine_mgr.cpp`：`ConnManager`
-- `src/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
-- `src/server/coco_tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
+- `src/coco/base/coroutine.hpp`、`src/coco/base/coroutine.cpp`：`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
+- `src/coco/base/coroutine_mgr.hpp`、`src/coco/base/coroutine_mgr.cpp`：`ConnManager`
+- `src/coco/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
+- `src/coco/server/coco_tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
 - `thirdparty/st`：调度、事件系统和上下文切换
 - `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试
 
 ## 一个线程，多段栈
 
-`CocoInit()` 做三件事：
+`CocoInit()` 做三件事，第二次调用直接返回。不显式调用时，第一次建协程（`CoCoroutine::start`）、建 socket 或 `CocoSleepMs` 会先调它：
 
 1. 确认当前系统有 epoll 或 kqueue。
 2. `st_set_eventsys(ST_EVENTSYS_ALT)`，选 ST 在该平台上的高性能事件系统。
@@ -33,19 +33,23 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 | `st_write` / `st_writev` / `st_sendto` | 发送缓冲区满 |
 | `st_accept` | 监听套接字上没有新连接 |
 | `st_connect` | 连接尚未完成 |
-| `st_usleep` | `CocoSleepMs`、`CocoLoopMs` |
-| `st_cond_wait` | 条件变量上没有信号 |
+| `st_usleep` | `CocoSleepMs` |
+| `st_cond_wait` | 条件变量上没有信号；`CocoWaitForShutdown`、阻塞的 `ListenAndServe` 停在这里 |
 | `st_thread_join` | 目标协程还没退出 |
 
 `CocoSocket` 把上述读写包成 `Read` / `Write`，并按超时把 `ETIME` 翻译成 `ERROR_SOCKET_TIMEOUT`。超时也是一次让出：到点后 ST 把该协程重新调度起来，读写返回错误。
 
-主协程如果在 `main` 里空转而不让出，其他协程得不到运行。示例程序在启动监听协程之后调用 `CocoLoopMs()`，用 `st_usleep` 把主协程挂起，事件循环才能转起来。
+主协程如果在 `main` 里空转而不让出，其他协程得不到运行，`main` 返回则进程直接结束。所以主协程要挂起在某个让出的调用上：服务端程序调用阻塞的 `ListenAndServe`，或者 `Start` 之后调用 `CocoWaitForShutdown()`。两者都停在条件变量上，直到 `SIGINT` / `SIGTERM` 或某条协程调用 `CocoShutdown()`；`ListenAndServe` 醒来后先 `Stop()`，等所有连接退出再返回。`CocoLoopMs()` 已废弃，现在等同于 `CocoWaitForShutdown()`。
+
+信号只在第一次等待（或 `CocoRun`）时接管。第一个 `SIGINT` / `SIGTERM` 请求退出并把信号还给原来的处理方式，第二个信号按默认动作直接结束进程；这个计数放在信号处理函数里，所以某段代码一直不让出协程、watcher 协程跑不起来时也有效。启动时被忽略的信号（shell 里后台作业的 `SIGINT`）保持忽略。
+
+自己写主循环（不是服务端）时，用 `CocoRun(fn)`：它在主协程上直接调用 `fn`，用进程自己的栈，并在 `fn` 运行期间把退出请求变成对主协程的一次中断，同时让 `CocoShouldStop()` 在主协程上返回 true。被中断的只是正在进行的那一次阻塞调用，之后的调用照常工作，所以循环要检查 `CocoShouldStop()`。主协程不是 `CoCoroutine`，没有 `trd_err_`，`CocoShouldStop()` 对它读的是 `CocoRun` 记下的标志。
 
 ## 两类协程，两种归属
 
 ```mermaid
 flowchart TD
-    main["主协程<br/>CocoInit / CocoLoopMs"]
+    main["主协程<br/>ListenAndServe / CocoWaitForShutdown / CocoRun"]
     listen["ListenRoutine<br/>循环 Accept，归调用方所有"]
     conn["ConnRoutine<br/>DoCycle 读写这条连接，归自己所有"]
     mgr["ConnManager<br/>存活连接的名单"]
@@ -133,7 +137,7 @@ while (!名单为空)
 
 ## 和业务代码的边界
 
-写服务端时，通常不需要继承任何类。`src/server/coco_tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 要等所有处理函数返回才会返回，所以不能在处理函数里调用它。
+写服务端时，通常不需要继承任何类。`src/coco/server/coco_tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 先停监听协程、关闭监听 socket，再等所有处理函数返回，所以不能在处理函数里调用它；两个协程同时 `Stop()` 时后到的等先到的，任何一个返回时服务都已完全停下；处理函数想结束服务时调用 `CocoShutdown()`，由停在 `ListenAndServe` 或 `CocoWaitForShutdown()` 里的协程去 `Stop()`。
 
 需要自己控制 accept 或连接对象时，再继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`，循环条件里加上 `ShouldTermCycle()`。`Shutdown` 和监听协程的 `Stop()` 同样要等 `DoCycle()` 返回。
 

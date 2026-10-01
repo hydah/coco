@@ -2,14 +2,14 @@
 
 `TlsConn` 把 OpenSSL 放在任意一条 `StreamConn` 上面，通常是 TCP，也可以是测试里的包装连接。OpenSSL 不直接读写文件描述符，只读写两块内存 BIO。协程在「把下层读到的字节喂进 `bio_in`」和「把 `bio_out` 里的字节写给下层」之间来回切换。TLS 1.2 和 TLS 1.3 共用这一个循环。
 
-代码在 `src/net/tls/coco_tls.hpp` 和 `src/net/tls/coco_tls.cpp`，有三个类：
+代码在 `src/coco/net/tls/coco_tls.hpp` 和 `src/coco/net/tls/coco_tls.cpp`，有三个类：
 
 - `TlsConfig`：持有一个 `SSL_CTX`，由所有用它建的连接共享。证书和私钥在 `NewServer` 时加载一次，不再每条连接读一次文件。
 - `TlsConn`：一条 TLS 连接，拥有下层 `StreamConn`。密文只经过下层的 `Read` / `Write`，超时也原样转给下层。
 - `TlsListener`：包住另一个 `StreamListener`，把它 `Accept` 出来的每条连接包成 `TlsConn`。
 - `TlsDialer()`：包住另一个 `StreamDialer`，返回握手完成的 `TlsConn`。不传配置时所有这样的 dialer 共享一个客户端 `TlsConfig`。
 
-TLS 自成一层，夹在 `layer4` 和 `layer7` 之间：输入一条 `StreamConn`，输出一条 `StreamConn`。服务端的调用点在 `src/server/coco_tcp_server.cpp`：配置了证书的 `TcpServer::Serve` 建一个 `TlsConfig`，把监听器包成 `TlsListener`，`HttpServer` 的 HTTPS 就是这样来的。客户端用 `TlsDialer()`：它先用下层 dialer（默认 `TcpDialer()`）建连，给下层设上这次拨号的超时，再包成 `TlsConn` 并调用 `Handshake()`。`layer7` 不 include TLS，`HttpClient` 和 `WebSocketClient` 只是调用注入给它们的 `StreamDialer`，https / wss 由调用方传入 `TlsDialer()`。
+TLS 自成一层，夹在 `layer4` 和 `layer7` 之间：输入一条 `StreamConn`，输出一条 `StreamConn`。服务端的调用点在 `src/coco/server/coco_tcp_server.cpp`：配置了证书的 `TcpServer::Start` 建一个 `TlsConfig`，把监听器包成 `TlsListener`，`HttpServer` 的 HTTPS 就是这样来的。客户端用 `TlsDialer()`：它先用下层 dialer（默认 `TcpDialer()`）建连，给下层设上这次拨号的超时，再包成 `TlsConn` 并调用 `Handshake()`。`layer7` 不 include TLS，`HttpClient` 和 `WebSocketClient` 只是调用注入给它们的 `StreamDialer`，https / wss 由调用方传入 `TlsDialer()`。
 
 ## 为什么是内存 BIO
 
@@ -42,7 +42,7 @@ ST 的套接字是非阻塞的，读不到数据时 `st_read` 让出协程。Ope
 | 证书 | `SSL_CTX_use_certificate_chain_file` + `SSL_CTX_use_PrivateKey_file` + `SSL_CTX_check_private_key` | 不加载 |
 | 校验对端 | `SSL_VERIFY_NONE` | `SSL_VERIFY_NONE` |
 
-`TlsConn` 用哪个角色由 `TlsConfig::IsServer()` 决定。证书在 `NewServer` 里就检查完，文件缺失或密钥不匹配时它返回 `ERROR_HTTPS_KEY_CRT`，`TcpServer::Serve` 随之失败，不会等到每次握手才报错。
+`TlsConn` 用哪个角色由 `TlsConfig::IsServer()` 决定。证书在 `NewServer` 里就检查完，文件缺失或密钥不匹配时它返回 `ERROR_HTTPS_KEY_CRT`，`TcpServer::Start`（以及 `ListenAndServe`）随之失败，不会等到每次握手才报错。
 
 `SSL_CTX_new(TLS_method())` 让 OpenSSL 自己协商版本，默认能谈到 TLS 1.3，也能回落到 TLS 1.2。加密套件用 `SSL_CTX_set_cipher_list(ctx, "ALL")`。`SSL_MODE_ENABLE_PARTIAL_WRITE` 允许 `SSL_write` 只消化掉明文的前半段，剩余部分由 `TlsConn::Write` 的循环继续写。
 
@@ -175,7 +175,7 @@ if (WANT_READ) {
 一条 HTTPS 请求在服务端经过的对象：
 
 ```text
-TcpServer::Serve
+TcpServer::Start
   TlsConfig::NewServer             加载一次证书和私钥
   new TlsListener(tcp_listener)    包住 TcpListener
 TcpServer::Acceptor::Cycle

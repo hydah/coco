@@ -1,50 +1,99 @@
-# CMake 最低版本号要求
-cmake_minimum_required (VERSION 3.5)
+# One library, libcoco. The layers inside it (core -> l4 -> tls | l7 -> server) are kept
+# apart by the include rules that tests/LayerDependencies checks (cmake/check_layers.cmake).
+file(GLOB_RECURSE COCO_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/coco/*.cpp)
+# macOS archives and some volumes leave "._name.cpp" resource-fork files beside the sources.
+list(FILTER COCO_SRCS EXCLUDE REGEX "/\\._[^/]*$")
+add_library(coco ${COCO_SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
+add_library(coco::coco ALIAS coco)
 
-# 每层一个静态库，只链接它允许依赖的下层。tls 和 l7 平级、互不依赖，由 server 组合：
-#   coco_server -> coco_l7  -> coco_l4 -> coco_core
-#               -> coco_tls -> coco_l4
-# 头文件层面的依赖方向由 tests 里的 LayerDependencies 用例检查（cmake/check_layers.cmake）。
+set_target_properties(coco PROPERTIES
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  POSITION_INDEPENDENT_CODE ON
+  VERSION ${PROJECT_VERSION}
+  SOVERSION ${PROJECT_VERSION_MAJOR})
+target_compile_features(coco PUBLIC cxx_std_11)
 
-# 协程运行时、错误码、日志、工具。这几个目录互相引用，只能作为一层。
-aux_source_directory(./base CORE_SRCS)
-aux_source_directory(./common CORE_SRCS)
-aux_source_directory(./log CORE_SRCS)
-aux_source_directory(./utils CORE_SRCS)
-add_library(coco_core ${CORE_SRCS})
-target_link_libraries(coco_core PUBLIC st pthread)
+# Users include "coco/...". ST, OpenSSL and http-parser stay private: no public header
+# includes theirs.
+target_include_directories(coco
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    ${THIRDPARTY})
+target_link_libraries(coco PRIVATE st ${COCO_OPENSSL_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
 
-# 传输层：套接字封装、TCP、UDP。
-aux_source_directory(./net L4_SRCS)
-aux_source_directory(./net/layer4 L4_SRCS)
-add_library(coco_l4 ${L4_SRCS})
-target_link_libraries(coco_l4 PUBLIC coco_core)
+if(APPLE)
+  target_compile_definitions(coco PRIVATE _DARWIN_C_SOURCE)
+else()
+  target_compile_definitions(coco PRIVATE _GNU_SOURCE _REENTRANT)
+endif()
+coco_set_warnings(coco)
 
-# 安全层：TLS，把一个 StreamConn 包成另一个 StreamConn。
-aux_source_directory(./net/tls TLS_SRCS)
-add_library(coco_tls ${TLS_SRCS})
-target_link_libraries(coco_tls PUBLIC coco_l4 ssl crypto)
+if(NOT COCO_INSTALL)
+  return()
+endif()
 
-# 应用层协议：每个协议一个目录，里面是编解码和会话。
-aux_source_directory(./net/layer7/http L7_SRCS)
-aux_source_directory(./net/layer7/ws L7_SRCS)
-# 连接由注入的 StreamDialer 建立，所以不依赖 TLS，也不链接 OpenSSL。
-add_library(coco_l7 ${L7_SRCS} ${THIRDPARTY}/http-parser/http_parser.c)
-target_link_libraries(coco_l7 PUBLIC coco_l4)
+include(CMakePackageConfigHelpers)
+set(COCO_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/coco)
 
-# 服务运行框架：accept 循环、连接生命周期、把连接交给协议处理函数。
-aux_source_directory(./server SERVER_SRCS)
-add_library(coco_server ${SERVER_SRCS})
-target_link_libraries(coco_server PUBLIC coco_l7 coco_tls)
+install(TARGETS coco EXPORT cocoTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-set(COCO_LAYER_LIBS coco_core coco_l4 coco_tls coco_l7 coco_server)
-foreach(lib ${COCO_LAYER_LIBS})
-  add_dependencies(${lib} COCO_OPENSSL_PROJECT)
-  set_property(TARGET ${lib} PROPERTY POSITION_INDEPENDENT_CODE ON)
-endforeach()
+# A static libcoco needs the static libraries it was built with; they go to lib/coco so
+# they never shadow a system libssl. A shared one has them linked in.
+set(COCO_PC_LIBS_PRIVATE "")
+set(COCO_PC_REQUIRES_PRIVATE "")
+if(NOT BUILD_SHARED_LIBS)
+  install(TARGETS st EXPORT cocoTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/coco)
+  string(APPEND COCO_PC_LIBS_PRIVATE " \${libdir}/coco/libst.a")
+  if(COCO_USE_SYSTEM_OPENSSL)
+    set(COCO_PC_REQUIRES_PRIVATE "openssl")
+  else()
+    install(FILES ${COCO_OPENSSL_LIB_DIR}/libssl.a ${COCO_OPENSSL_LIB_DIR}/libcrypto.a
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/coco)
+    string(APPEND COCO_PC_LIBS_PRIVATE " \${libdir}/coco/libssl.a \${libdir}/coco/libcrypto.a")
+  endif()
+  string(APPEND COCO_PC_LIBS_PRIVATE " -pthread")
+  foreach(lib ${CMAKE_DL_LIBS})
+    string(APPEND COCO_PC_LIBS_PRIVATE " -l${lib}")
+  endforeach()
+endif()
 
-# 全部功能的聚合目标，链接它等于链接所有层。
-add_library(coco INTERFACE)
-target_link_libraries(coco INTERFACE coco_server)
+# Headers only used inside the library are not installed.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/coco
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING
+    PATTERN "*.h"
+    PATTERN "*.hpp"
+    REGEX "/utils/(utils|md5|sha1|base64)\\.hpp$" EXCLUDE
+    REGEX "/base/shutdown\\.hpp$" EXCLUDE)
 
-install(TARGETS ${COCO_LAYER_LIBS} ARCHIVE DESTINATION ${PROJECT_SOURCE_DIR}/dist/lib)
+install(EXPORT cocoTargets NAMESPACE coco:: DESTINATION ${COCO_CMAKE_DIR})
+
+if(BUILD_SHARED_LIBS)
+  set(COCO_SHARED ON)
+else()
+  set(COCO_SHARED OFF)
+endif()
+configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/cocoConfig.cmake.in
+  ${PROJECT_BINARY_DIR}/cocoConfig.cmake
+  INSTALL_DESTINATION ${COCO_CMAKE_DIR})
+write_basic_package_version_file(${PROJECT_BINARY_DIR}/cocoConfigVersion.cmake
+  COMPATIBILITY SameMinorVersion)
+install(FILES ${PROJECT_BINARY_DIR}/cocoConfig.cmake ${PROJECT_BINARY_DIR}/cocoConfigVersion.cmake
+  DESTINATION ${COCO_CMAKE_DIR})
+
+# Relative to the .pc file, so cmake --install --prefix may pick another prefix.
+if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+  set(COCO_PC_PREFIX "${CMAKE_INSTALL_PREFIX}")
+else()
+  file(RELATIVE_PATH COCO_PC_UP "/p/${CMAKE_INSTALL_LIBDIR}/pkgconfig" "/p")
+  set(COCO_PC_PREFIX "\${pcfiledir}/${COCO_PC_UP}")
+endif()
+configure_file(${PROJECT_SOURCE_DIR}/cmake/coco.pc.in ${PROJECT_BINARY_DIR}/coco.pc @ONLY)
+install(FILES ${PROJECT_BINARY_DIR}/coco.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)

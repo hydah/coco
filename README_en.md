@@ -4,15 +4,16 @@ English | [中文](README.md)
 
 coco is a C++11 networking library built on [State Threads](https://github.com/hydah/state-threads) (ST). Every connection runs in its own coroutine and you write plain synchronous code: when `Read` has no data, the current coroutine yields, the event loop runs other coroutines, and control comes back once data arrives. No callbacks, no hand-written state machines.
 
-It supports TCP, UDP, TLS, HTTP/1.1 and WebSocket on Linux (epoll) and macOS (kqueue).
+It supports TCP, UDP, TLS, HTTP/1.1, WebSocket and RTMP on Linux (epoll) and macOS (kqueue).
 
 ## Features
 
 - **Synchronous style, asynchronous execution**: one kernel thread per process running many coroutines, 64KB stack each by default.
-- **Protocols**: TCP / UDP, TLS 1.2 / 1.3 (server and client), HTTP/1.1 (keep-alive, chunked, routing), WebSocket (`ws://` and `wss://`, server and client).
-- **Layered by protocol**: one directory and one static library per layer, each depending only on the layers below. HTTP and WebSocket only see a `StreamConn` and don't care whether TCP or TLS is underneath. The layering rule is enforced by a test.
+- **Protocols**: TCP / UDP, TLS 1.2 / 1.3 (server and client), HTTP/1.1 (keep-alive, chunked, routing), WebSocket (`ws://` and `wss://`, server and client), RTMP (`rtmp://` and `rtmps://`, publish and play).
+- **Layered by protocol**: one directory per layer, each depending only on the layers below. HTTP and WebSocket only see a `StreamConn` and don't care whether TCP or TLS is underneath. The layering rule is enforced by a test.
 - **Managed connection lifecycle**: `TcpServer` handles accept, the TLS handshake, connection cleanup and shutdown. You only write a handler function.
 - **Error codes, not exceptions**: every call returns an `int`; `COCO_SUCCESS` is 0.
+- **Usable as a library**: one `libcoco`, every name in `namespace coco`, and public headers that don't expose ST, OpenSSL or http-parser; works with `find_package(coco)`, `add_subdirectory` and pkg-config.
 - **Bundled dependencies**: ST and http-parser are git submodules; OpenSSL is built from source as a static library.
 
 ## Quick start
@@ -38,14 +39,10 @@ Run a TCP echo:
 ### TCP echo server
 
 ```cpp
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "coco/coco.h"
 
 int main() {
-    CocoInit();
-
-    TcpServer server([](StreamConn &conn) {
+    coco::TcpServer server([](coco::StreamConn &conn) {
         char buf[1024];
         ssize_t n = 0;
         int ret;
@@ -54,14 +51,51 @@ int main() {
         }
         return ret;
     });
-    if (server.ListenAndServe("127.0.0.1", 8080) != COCO_SUCCESS) return -1;
-
-    CocoLoopMs(1000);   // the main coroutine drives the event loop here
-    return 0;
+    // Serves until Ctrl-C / SIGTERM, then closes every connection and returns
+    return server.ListenAndServe("127.0.0.1", 8080) == COCO_SUCCESS ? 0 : 1;
 }
 ```
 
 Each new connection calls the handler in its own coroutine and is freed automatically when the handler returns. Per-connection state can simply live in local variables.
+
+`coco/coco.h` includes the whole public API. Every name is in `namespace coco` (the snippets below leave out `coco::`); macros start with `COCO_` or `coco_`.
+
+### Runtime and shutdown
+
+There is nothing to initialize: the first call that needs a coroutine or a socket sets up ST. Call `CocoInit()` first only if you want its error code up front.
+
+`ListenAndServe` / `ListenAndServeTLS` / `Serve` block until `Stop()` or a shutdown request (`SIGINT`, `SIGTERM` or `CocoShutdown()`). Before returning they close the listening port and wait for every connection to exit, so `main` can simply return. To run several servers, or do other work besides serving:
+
+```cpp
+HttpServer api(&mux);
+TcpServer echo(Echo);
+api.Start("0.0.0.0", 8080);    // Start / StartTLS return once serving has started
+echo.Start("0.0.0.0", 9000);
+CocoWaitForShutdown();         // until Ctrl-C; each server stops in its destructor
+```
+
+A handler must not call `Stop()`, which waits for every connection including its own; to end the program it calls `CocoShutdown()`.
+
+Signal rules: the first `SIGINT` / `SIGTERM` requests a graceful shutdown and hands the signals back to whatever handled them before; a second one always ends the process, even if shutting down hangs, or some code never yields so the first one was never served. A signal that was ignored at startup (the `SIGINT` of a background job in a shell) stays ignored.
+
+### Making the main loop stoppable too
+
+A server shuts down gracefully through the blocking `ListenAndServe`. When you write the main loop yourself (a client that keeps reading and writing, say), wrap the body of the program in `CocoRun`. It sets the runtime up (returning the error code if that fails), then calls `fn` and returns what it returns. When a shutdown is requested while `fn` runs, `CocoShouldStop()` turns true and the blocking call in progress fails once, so the loop ends by itself and the objects on `fn`'s stack are destroyed as usual.
+
+```cpp
+int main() {
+    return CocoRun([]() {
+        std::unique_ptr<TcpConn> conn;
+        if (DialTcp("127.0.0.1", 8080, 1000 * 1000, &conn) != COCO_SUCCESS) return 1;
+        while (!CocoShouldStop()) {      // true after Ctrl-C, SIGTERM or CocoShutdown()
+            // conn->Write(), conn->Read(), CocoSleepMs() ...
+        }
+        return 0;                        // conn is closed here
+    });
+}
+```
+
+`fn` runs on the main coroutine, on the process's own stack rather than a 64KB coroutine stack. Only the blocking call in progress fails; later ones work, so the loop has to check `CocoShouldStop()`. The two pingpong clients in `examples/pingpong` are written this way.
 
 ### HTTP / HTTPS server
 
@@ -81,7 +115,6 @@ mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
 HttpServer server(&mux);
 server.ListenAndServe("0.0.0.0", 8080);
 // HTTPS: server.ListenAndServeTLS("0.0.0.0", 9082, "server.crt", "server.key");
-CocoLoopMs(1000);
 ```
 
 The client is modeled after Go's `http.Client`: keep-alive connections are pooled per host and redirects are followed. HTTPS needs `TlsDialer()` injected:
@@ -119,13 +152,40 @@ server.ListenAndServe("0.0.0.0", 9083);
 ```
 
 ```cpp
-// Client: modeled after Go; wss:// needs a TLS dialer injected first (net/tls/coco_tls.hpp)
+// Client: modeled after Go; wss:// needs a TLS dialer injected first
 WebSocketClient ws;
 ws.SetTlsDialer(TlsDialer());
 ws.Dial("ws://127.0.0.1:9083/echo");
 ws.Send("hello");
 std::string reply;
 ws.ReadMessage(&reply);
+```
+
+### RTMP publish and play
+
+```cpp
+// Server: read media on publish, write it on play. examples/rtmp is a live relay.
+RtmpServer server([](RtmpConn &conn, const RtmpRequest &req) {
+    if (!req.publish) return COCO_SUCCESS;
+    RtmpMessage msg;
+    while (conn.ReadMessage(&msg) == COCO_SUCCESS) {
+        // msg.type: RTMP_MSG_AUDIO / RTMP_MSG_VIDEO / RTMP_MSG_DATA_AMF0
+    }
+    return COCO_SUCCESS;
+});
+server.ListenAndServe("0.0.0.0", 1935);   // ListenAndServeTLS for RTMPS
+```
+
+```cpp
+// Client. rtmps:// needs SetDialer(TlsDialer()) first.
+RtmpClient pub;
+pub.Dial("rtmp://127.0.0.1:1935/live/stream");
+pub.Publish();
+RtmpMessage msg;
+msg.type = RTMP_MSG_AUDIO;
+msg.timestamp = 0;
+msg.payload = "...";
+pub.WriteMessage(msg);
 ```
 
 Full sources are in [`examples/`](examples).
@@ -140,6 +200,7 @@ Addresses and ports are hardcoded in each `main`; command-line arguments are ign
 | `pingpong_server_udp` / `pingpong_client_udp` | `127.0.0.1:8080` | UDP echo; the server uses `ListenRoutine` directly |
 | `http_server` / `http_client` | `0.0.0.0:9082` | HTTPS; start from `examples/http-server/` so the certificate is found |
 | `ws_server` / `ws_client` | `0.0.0.0:9083/echo` | WebSocket echo; `websocat ws://127.0.0.1:9083/echo` works too |
+| `rtmp_server` | `0.0.0.0:1935/{app}/{stream}` | RTMP live relay: one publisher and any number of players on the same path |
 
 ```bash
 cd examples/http-server
@@ -149,7 +210,7 @@ cd examples/http-server
 
 ## Building
 
-Requirements: CMake ≥ 3.5 (CMake 4 works), a C++11 compiler, Git, and Perl (needed by OpenSSL's `Configure`).
+Requirements: CMake ≥ 3.14 (CMake 4 works), a C++11 compiler, Git, and Perl (needed by OpenSSL's `Configure`).
 
 ```bash
 # macOS
@@ -167,7 +228,8 @@ Common `./build.sh` options:
 | `-j N` | Parallel jobs, defaults to the CPU count |
 | `-v` | Print full cmake / make output |
 | `--no-examples` | Skip the examples |
-| `-i` | Install into `dist/` inside the repository |
+| `-i` | Install into `--prefix`, `dist/` inside the repository by default |
+| `--prefix DIR` | Install directory |
 | `-t` | Run ctest after building |
 
 Without the script:
@@ -177,26 +239,43 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-In your own CMake project, link the `coco` target to get every layer plus ST and OpenSSL; a TCP-only program can link just `coco_l4`, and plain HTTP / WebSocket needs only `coco_l7`, without OpenSSL. See [.harness/docs/build.md](.harness/docs/build.md) for AddressSanitizer, output paths and troubleshooting.
+### Using coco in your project
+
+After installing, use `find_package`:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j && cmake --install build --prefix /opt/coco
+```
+
+```cmake
+find_package(coco 0.1 REQUIRED)            # -DCMAKE_PREFIX_PATH=/opt/coco
+target_link_libraries(app PRIVATE coco::coco)
+```
+
+You can also vendor the repository and `add_subdirectory(coco)`, then link `coco::coco` the same way; coco's examples, tests and install rules are all off by default then, so nothing of it ends up in the parent project's install. Without CMake: `pkg-config --static --cflags --libs coco`.
+
+The default is a static `libcoco.a`. The `libst.a`, `libssl.a` and `libcrypto.a` it needs are installed under `lib/coco/`, so they never shadow a system OpenSSL, and `find_package` and pkg-config add them for you. `-DBUILD_SHARED_LIBS=ON` builds a shared library; `-DCOCO_USE_SYSTEM_OPENSSL=ON` uses the system OpenSSL instead (on macOS add e.g. `-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)`). See [.harness/docs/build.md](.harness/docs/build.md) for AddressSanitizer, output paths and troubleshooting.
 
 ## Architecture
 
 ```text
 server     TcpServer, HttpServer                    accept loop + optional TLS + protocol handler
-layer7  |  HTTP, WebSocket                          depends only on StreamConn / StreamDialer
+layer7  |  HTTP, WebSocket, RTMP                    depends only on StreamConn / StreamDialer
 tls     |  TlsConn, TlsListener, TlsDialer          wraps one StreamConn into another
 layer4     StreamConn etc. interfaces; TcpConn, UdpConn   st_read / st_write / st_accept
 core       coroutines, log, errors, utils           st_thread_create
 ```
 
-`layer7` and `tls` are siblings and don't depend on each other: clients open connections through an injected `StreamDialer`, `TlsDialer()` for https / wss, so plain HTTP / WebSocket programs don't need OpenSSL. A file may only include headers from its own layer or lower, and sibling layers may not include each other. The `LayerDependencies` ctest case scans `src/` to enforce this. Because layers talk to each other only through `StreamConn`, you can insert a wrapper between any two layers to capture bytes, inject delays or truncate data without touching protocol code.
+`layer7` and `tls` are siblings and don't depend on each other: clients open connections through an injected `StreamDialer`; for https / wss the caller passes `TlsDialer()`. A file may only include headers from its own layer or lower, and sibling layers may not include each other. The `LayerDependencies` ctest case scans `src/` to enforce this. Because layers talk to each other only through `StreamConn`, you can insert a wrapper between any two layers to capture bytes, inject delays or truncate data without touching protocol code.
 
-Source layout:
+Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`, `md5` / `sha1` / `base64` and `base/shutdown.hpp` are internal and not installed):
 
 ```text
-src/
-├── coco_api.h       CocoInit, ListenTcp / DialTcp, ListenUdp / DialUdp, CocoSleepMs, CocoShouldStop
-├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager
+src/coco/
+├── coco.h           umbrella header
+├── coco_api.h       CocoInit, CocoWaitForShutdown / CocoShutdown, ListenTcp / DialTcp, ListenUdp / DialUdp, CocoSleepMs, CocoShouldStop
+├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager; shutdown and signals
 ├── common/          error codes
 ├── log/             logging
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
@@ -205,8 +284,9 @@ src/
 │   ├── tls/         TlsConfig, TlsConn, TlsListener, TlsDialer
 │   └── layer7/
 │       ├── http/    messages, HttpServeMux, ServeHttpConn, HttpClient
-│       └── ws/      frame codec, WebSocketConn, WebSocketClient, WebSocketHandler
-└── server/          TcpServer, HttpServer
+│       ├── ws/      frame codec, WebSocketConn, WebSocketClient, WebSocketHandler
+│       └── rtmp/    handshake, chunks, AMF0, RtmpConn, RtmpClient
+└── server/          TcpServer, HttpServer, RtmpServer
 ```
 
 ## Documentation
@@ -216,7 +296,7 @@ The design documents are written in Chinese:
 - [Build](.harness/docs/build.md): dependencies, build options, outputs, tests, troubleshooting
 - [Architecture](.harness/docs/architecture.md): layering, concurrency model, protocol behavior, error codes
 - [Coroutines and connection management](.harness/docs/coroutine.md): who owns listener and connection coroutines, and how a connection frees itself on its own stack
-- [State Threads and src/base](.harness/docs/st.md): ST context switching, I/O yielding, interruption and exit
+- [State Threads and src/coco/base](.harness/docs/st.md): ST context switching, I/O yielding, interruption and exit
 - [TLS handshake and I/O](.harness/docs/tls.md): plugging OpenSSL into coroutine sockets with memory BIOs
 
 ## Tests
@@ -227,21 +307,24 @@ cd build && ctest --output-on-failure        # if already built
 ./build/bin/coco_tests ConnStopDoesNotWait   # run a single case
 ```
 
-The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, TLS, WebSocket framing and handshakes, wss, and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19228.
+The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, the blocking `ListenAndServe` and signal shutdown, TLS, WebSocket framing and handshakes, wss, the RTMP handshake and publish/play, and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19340.
 
 ## Platforms
 
 | OS | Architecture | Event system |
 | --- | --- | --- |
-| Linux | x86_64, ARM64 | epoll |
+| Linux | x86_64 | epoll |
 | macOS (≥ 11.0) | x86_64, Apple Silicon | kqueue |
+
+Linux ARM64 does not build at the moment: in the bundled State Threads (`thirdparty/st`), `md.h` handles aarch64 only in its macOS branch, not in the Linux one, and stops with `Unknown CPU architecture`. Supporting it means adding that to the submodule first.
 
 ## Limitations
 
-- Single-threaded: ST runs on the thread that called `CocoInit()`; use multiple processes to use multiple cores.
+- Single-threaded: ST runs on the thread that set it up (the first one to call into coco), and coco objects must not cross threads; use multiple processes to use multiple cores.
 - TLS does not verify the peer certificate (`SSL_VERIFY_NONE`).
 - No HTTP/2.
 - A WebSocket message is capped at 4MB (`MAX_WS_PACKET`).
+- An RTMP message is capped at 16777215 bytes (`kRtmpMaxMessage`). No RTMPE, and aggregate messages are not unpacked.
 
 ## License
 

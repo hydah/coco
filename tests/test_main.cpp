@@ -1,8 +1,12 @@
 #include <string>
 
-#include "coco_api.h"
-#include "log/log.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/log/log.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace cotest {
 
@@ -56,6 +60,10 @@ int main(int argc, char **argv) {
         it->second();
     } else {
         for (auto &c : cases) {
+            // Helpers run in a child process of the case that needs one, never by themselves.
+            if (c.first.compare(0, 6, "Helper") == 0) {
+                continue;
+            }
             fprintf(stderr, "[ RUN  ] %s\n", c.first.c_str());
             int before = cotest::Failures();
             c.second();

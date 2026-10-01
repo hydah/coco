@@ -1,15 +1,12 @@
 #include <string>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "log/log.hpp"
-#include "server/coco_http_server.hpp"
+#include "coco/coco.h"
+
+using namespace coco;
 
 // HTTPS on 9082, run from examples/http-server so ./server.crt and ./server.key are found.
-// Try: curl -k https://127.0.0.1:9082/hello/coco
+// Try: curl -k https://127.0.0.1:9082/hello/coco. Ctrl-C stops it gracefully.
 int main() {
-    CocoInit();
-
     HttpServeMux mux;
     mux.HandleFunc("GET /hello/{name}", [](HttpResponseWriter &w, HttpRequest &r) {
         w.Write("hello " + r.PathValue("name") + "\n");
@@ -29,12 +26,11 @@ int main() {
     });
 
     HttpServer server(&mux);
+    // Serves until SIGINT or SIGTERM, then closes every connection and returns.
     if (server.ListenAndServeTLS("0.0.0.0", 9082, "./server.crt", "./server.key") !=
         COCO_SUCCESS) {
         coco_error("listen failed");
         return -1;
     }
-
-    CocoLoopMs(1000);
     return 0;
 }

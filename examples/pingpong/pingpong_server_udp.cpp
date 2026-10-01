@@ -4,13 +4,10 @@
 #include <string>
 #include <vector>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "log/log.hpp"
-#include "net/coco_socket.hpp"
-#include "net/layer4/coco_udp.hpp"
+#include "coco/coco.h"
 
 using namespace std;
+using namespace coco;
 
 string local_ip = "127.0.0.1";
 int port = 8080;
@@ -34,7 +31,7 @@ int PingPongListener::Cycle() {
   char buf[1024];
   ssize_t nread = 0;
   ssize_t nwrite = 0;
-  struct sockaddr_in addr;
+  struct sockaddr_storage addr;
   int ret = 0;
   while (!ShouldTermCycle()) {
     int addrlen = sizeof(addr);
@@ -44,7 +41,8 @@ int PingPongListener::Cycle() {
       continue;
     }
     buf[nread] = '\0';
-    coco_trace("read from: %s, size: %d, buf: %s", GetRemoteAddr(addr).c_str(), int(nread), buf);
+    coco_trace("read from: %s, size: %d, buf: %s",
+               FormatSockaddr((struct sockaddr *)&addr, addrlen).c_str(), int(nread), buf);
     l_->SendTo(buf, (int)nread, &nwrite, (struct sockaddr *)&addr, addrlen);
   }
 
@@ -53,8 +51,6 @@ int PingPongListener::Cycle() {
 
 int main() {
   log_level = log_dbg;
-  CocoInit();
-
   std::unique_ptr<UdpListener> l;
   int ret = ListenUdp(local_ip, port, &l);
   if (ret != COCO_SUCCESS) {
@@ -64,7 +60,7 @@ int main() {
   PingPongListener *pl = new PingPongListener(std::move(l));
   pl->Start();
 
-  CocoLoopMs(1000);
+  CocoWaitForShutdown();
 
   delete pl;
   return 0;

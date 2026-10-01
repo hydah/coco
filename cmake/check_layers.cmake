@@ -7,17 +7,17 @@ if(NOT SRC_DIR)
 endif()
 
 # 路径前缀:层号:层名。层号大的在上面，只能 include 层号不大于自己的头文件。
-# 不在表里的路径（st.h、http-parser/、coco_api.h）不参与检查。
+# 不在表里的路径（st.h、http-parser/、coco/coco_api.h、coco/coco.h 等汇总头）不参与检查。
 set(COCO_LAYERS
-  "base/:0:core"
-  "common/:0:core"
-  "log/:0:core"
-  "utils/:0:core"
-  "net/coco_socket:1:l4"
-  "net/layer4/:1:l4"
-  "net/tls/:2:tls"
-  "net/layer7/:2:l7"
-  "server/:3:server"
+  "coco/base/:0:core"
+  "coco/common/:0:core"
+  "coco/log/:0:core"
+  "coco/utils/:0:core"
+  "coco/net/coco_socket:1:l4"
+  "coco/net/layer4/:1:l4"
+  "coco/net/tls/:2:tls"
+  "coco/net/layer7/:2:l7"
+  "coco/server/:3:server"
 )
 # 层号相同但层名不同的是平级层，互相不能 include：tls 和 l7 都只依赖 l4，由 server 组合。
 
@@ -42,7 +42,7 @@ function(coco_layer_of path)
   endforeach()
 
   set(proto "")
-  if(path MATCHES "^net/layer7/([^/]+)/")
+  if(path MATCHES "^coco/net/layer7/([^/]+)/")
     set(proto "${CMAKE_MATCH_1}")
   endif()
 

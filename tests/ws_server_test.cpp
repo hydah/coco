@@ -4,15 +4,19 @@
 #include <string>
 #include <vector>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/layer7/ws/coco_ws.hpp"
-#include "net/layer7/ws/ws_frame.hpp"
-#include "net/tls/coco_tls.hpp"
-#include "server/coco_http_server.hpp"
-#include "server/coco_tcp_server.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/layer7/ws/coco_ws.hpp"
+#include "coco/net/layer7/ws/ws_frame.hpp"
+#include "coco/net/tls/coco_tls.hpp"
+#include "coco/server/coco_http_server.hpp"
+#include "coco/server/coco_tcp_server.hpp"
 #include "test_util.hpp"
+
+using namespace coco;
 
 namespace {
 
@@ -181,7 +185,7 @@ COTEST(WsServerEchoesToClient) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::vector<std::string> got;
     WebSocketClient ws;
@@ -220,7 +224,7 @@ COTEST(WsServerHandshake) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     std::string rsp = c.Handshake(UpgradeRequest() + Frame(WS::TEXT, "early"));
@@ -241,7 +245,7 @@ COTEST(WsServerRejectsBadUpgrade) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     {
         RawClient c(port);
@@ -272,7 +276,7 @@ COTEST(WsServerAnswersPingAndClose) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -300,7 +304,7 @@ COTEST(WsServerRejectsUnmaskedFrame) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -321,7 +325,7 @@ COTEST(WsServerHandlerReturnCloses) {
         }
     }));
     HttpServer server(&mux);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -340,7 +344,7 @@ COTEST(WsServerStopClosesOpenConns) {
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
     HttpServer *server = new HttpServer(&mux);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server->Start(kLoopback, port), COCO_SUCCESS);
 
     RawClient a(port), b(port);
     CHECK(a.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -363,7 +367,7 @@ COTEST(WsServerOverTls) {
     opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
     opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
     TcpServer server([&mux](StreamConn &conn) { return ServeHttpConn(conn, &mux); }, opt);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     WebSocketClient ws;
     ws.SetTlsDialer(TlsDialer());

@@ -8,14 +8,18 @@
 #include <string>
 #include <vector>
 
-#include "coco_api.h"
-#include "common/error.hpp"
-#include "net/layer4/coco_tcp.hpp"
-#include "net/layer7/ws/coco_ws.hpp"
-#include "net/layer7/ws/ws_frame.hpp"
+#include "st.h"
+
+#include "coco/coco_api.h"
+#include "coco/common/error.hpp"
+#include "coco/net/layer4/coco_tcp.hpp"
+#include "coco/net/layer7/ws/coco_ws.hpp"
+#include "coco/net/layer7/ws/ws_frame.hpp"
 #include "test_util.hpp"
-#include "utils/base64.hpp"
-#include "utils/sha1.hpp"
+#include "coco/utils/base64.hpp"
+#include "coco/utils/sha1.hpp"
+
+using namespace coco;
 
 namespace {
 
