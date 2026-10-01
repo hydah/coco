@@ -24,7 +24,7 @@ cd coco
 ./build.sh -t         # 构建并运行测试
 ```
 
-已经 clone 过但没拉 submodule 时，先执行 `git submodule update --init --recursive`。第一次构建会从 GitHub 下载 OpenSSL 源码包，离线构建方法见 [构建文档](docs/build.md)。
+已经 clone 过但没拉 submodule 时，先执行 `git submodule update --init --recursive`。第一次构建会从 GitHub 下载 OpenSSL 源码包，离线构建方法见 [构建文档](.harness/docs/build.md)。
 
 跑一个 TCP 回显：
 
@@ -177,7 +177,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-在自己的 CMake 工程里链接 `coco` 目标即可拿到全部层和 ST、OpenSSL；只写 TCP 程序时可以只链接 `coco_l4`，只用明文 HTTP / WebSocket 时链接 `coco_l7`，不需要 OpenSSL。AddressSanitizer、产物路径、排错等见 [构建文档](docs/build.md)。
+在自己的 CMake 工程里链接 `coco` 目标即可拿到全部层和 ST、OpenSSL；只写 TCP 程序时可以只链接 `coco_l4`，只用明文 HTTP / WebSocket 时链接 `coco_l7`，不需要 OpenSSL。AddressSanitizer、产物路径、排错等见 [构建文档](.harness/docs/build.md)。
 
 ## 架构
 
@@ -211,11 +211,11 @@ src/
 
 ## 文档
 
-- [构建](docs/build.md)：依赖、构建参数、产物、测试、排错
-- [架构](docs/architecture.md)：分层、并发模型、各协议的行为、错误码
-- [协程与连接管理](docs/coroutine.md)：监听协程和连接协程的所有权，连接如何在自己的栈上释放自己
-- [State Threads 与 src/base 的实现](docs/st.md)：ST 的切换、I/O 让出、中断与退出
-- [TLS 握手与读写](docs/tls.md)：用内存 BIO 把 OpenSSL 接进协程 socket
+- [构建](.harness/docs/build.md)：依赖、构建参数、产物、测试、排错
+- [架构](.harness/docs/architecture.md)：分层、并发模型、各协议的行为、错误码
+- [协程与连接管理](.harness/docs/coroutine.md)：监听协程和连接协程的所有权，连接如何在自己的栈上释放自己
+- [State Threads 与 src/base 的实现](.harness/docs/st.md)：ST 的切换、I/O 让出、中断与退出
+- [TLS 握手与读写](.harness/docs/tls.md)：用内存 BIO 把 OpenSSL 接进协程 socket
 
 ## 测试
 

@@ -24,7 +24,7 @@ cd coco
 ./build.sh -t         # build and run the tests
 ```
 
-If you cloned without submodules, run `git submodule update --init --recursive` first. The first build downloads the OpenSSL source tarball from GitHub; see [docs/build.md](docs/build.md) (Chinese) for offline builds.
+If you cloned without submodules, run `git submodule update --init --recursive` first. The first build downloads the OpenSSL source tarball from GitHub; see [.harness/docs/build.md](.harness/docs/build.md) (Chinese) for offline builds.
 
 Run a TCP echo:
 
@@ -177,7 +177,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-In your own CMake project, link the `coco` target to get every layer plus ST and OpenSSL; a TCP-only program can link just `coco_l4`, and plain HTTP / WebSocket needs only `coco_l7`, without OpenSSL. See [docs/build.md](docs/build.md) for AddressSanitizer, output paths and troubleshooting.
+In your own CMake project, link the `coco` target to get every layer plus ST and OpenSSL; a TCP-only program can link just `coco_l4`, and plain HTTP / WebSocket needs only `coco_l7`, without OpenSSL. See [.harness/docs/build.md](.harness/docs/build.md) for AddressSanitizer, output paths and troubleshooting.
 
 ## Architecture
 
@@ -213,11 +213,11 @@ src/
 
 The design documents are written in Chinese:
 
-- [Build](docs/build.md): dependencies, build options, outputs, tests, troubleshooting
-- [Architecture](docs/architecture.md): layering, concurrency model, protocol behavior, error codes
-- [Coroutines and connection management](docs/coroutine.md): who owns listener and connection coroutines, and how a connection frees itself on its own stack
-- [State Threads and src/base](docs/st.md): ST context switching, I/O yielding, interruption and exit
-- [TLS handshake and I/O](docs/tls.md): plugging OpenSSL into coroutine sockets with memory BIOs
+- [Build](.harness/docs/build.md): dependencies, build options, outputs, tests, troubleshooting
+- [Architecture](.harness/docs/architecture.md): layering, concurrency model, protocol behavior, error codes
+- [Coroutines and connection management](.harness/docs/coroutine.md): who owns listener and connection coroutines, and how a connection frees itself on its own stack
+- [State Threads and src/base](.harness/docs/st.md): ST context switching, I/O yielding, interruption and exit
+- [TLS handshake and I/O](.harness/docs/tls.md): plugging OpenSSL into coroutine sockets with memory BIOs
 
 ## Tests
 
