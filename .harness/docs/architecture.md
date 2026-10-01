@@ -85,7 +85,7 @@ I/O 接口在 `src/coco/utils/io.hpp`：`IoReader`、`IoWriter`、`IoReaderWrite
 
 ## 并发模型
 
-一个进程里一份 ST，跑在初始化它的那条线程上：显式调用 `CocoInit()`，或者第一次建协程、建 socket、`CocoSleepMs` 时自动初始化。协程与线程是 1:N：多条协程，一个内核线程。默认栈 64KB。Linux 用 epoll，macOS 用 kqueue。
+一个进程里一份 ST，跑在初始化它的那条线程上：程序从 `CocoRun()` 开始时由它初始化，也可以显式调用 `CocoInit()`，或者第一次建协程、建 socket、`CocoSleepMs` 时自动初始化。别的线程上的调用返回 `ERROR_ST_WRONG_THREAD`。协程与线程是 1:N：多条协程，一个内核线程。默认栈 64KB。Linux 用 epoll，macOS 用 kqueue。
 
 服务端的结构由 `TcpServer` 固定下来：
 
@@ -147,4 +147,4 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
 
 ## 示例与测试
 
-`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发）用来手动验证。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、别的线程上的调用返回 `ERROR_ST_WRONG_THREAD`、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发）用来手动验证。

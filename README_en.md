@@ -42,27 +42,31 @@ Run a TCP echo:
 #include "coco/coco.h"
 
 int main() {
-    coco::TcpServer server([](coco::StreamConn &conn) {
-        char buf[1024];
-        ssize_t n = 0;
-        int ret;
-        while ((ret = conn.Read(buf, sizeof(buf), &n)) == COCO_SUCCESS) {
-            if ((ret = conn.Write(buf, n, nullptr)) != COCO_SUCCESS) break;
-        }
-        return ret;
+    return coco::CocoRun([]() {
+        coco::TcpServer server([](coco::StreamConn &conn) {
+            char buf[1024];
+            ssize_t n = 0;
+            int ret;
+            while ((ret = conn.Read(buf, sizeof(buf), &n)) == COCO_SUCCESS) {
+                if ((ret = conn.Write(buf, n, nullptr)) != COCO_SUCCESS) break;
+            }
+            return ret;
+        });
+        // Serves until Ctrl-C / SIGTERM, then closes every connection and returns
+        return server.ListenAndServe("127.0.0.1", 8080) == COCO_SUCCESS ? 0 : 1;
     });
-    // Serves until Ctrl-C / SIGTERM, then closes every connection and returns
-    return server.ListenAndServe("127.0.0.1", 8080) == COCO_SUCCESS ? 0 : 1;
 }
 ```
 
-Each new connection calls the handler in its own coroutine and is freed automatically when the handler returns. Per-connection state can simply live in local variables.
+`CocoRun` is where the program starts: it sets up the coroutine runtime on the calling thread, then calls the function it was given. Each new connection calls the handler in its own coroutine and is freed automatically when the handler returns. Per-connection state can simply live in local variables.
 
 `coco/coco.h` includes the whole public API. Every name is in `namespace coco` (the snippets below leave out `coco::`); macros start with `COCO_` or `coco_`.
 
 ### Runtime and shutdown
 
-There is nothing to initialize: the first call that needs a coroutine or a socket sets up ST. Call `CocoInit()` first only if you want its error code up front.
+A program starts with `return CocoRun([]() { ... });` and makes every coco call inside it. `CocoRun` sets up ST on the calling thread, returns the error code right away if that fails, and makes the body of the program stoppable with Ctrl-C (see the next section). Without `CocoRun` things still work: the first call that needs a coroutine or a socket sets up ST, and `CocoInit()` checks the setup on its own if you want that.
+
+The runtime belongs to the thread that set it up, and so does everything coco creates. On any other thread, `CocoInit()`, `CocoRun()` and every call that needs the runtime return `ERROR_ST_WRONG_THREAD` instead of setting up a second runtime there.
 
 `ListenAndServe` / `ListenAndServeTLS` / `Serve` block until `Stop()` or a shutdown request (`SIGINT`, `SIGTERM` or `CocoShutdown()`). Before returning they close the listening port and wait for every connection to exit, so `main` can simply return. To run several servers, or do other work besides serving:
 
@@ -80,7 +84,7 @@ Signal rules: the first `SIGINT` / `SIGTERM` requests a graceful shutdown and ha
 
 ### Making the main loop stoppable too
 
-A server shuts down gracefully through the blocking `ListenAndServe`. When you write the main loop yourself (a client that keeps reading and writing, say), wrap the body of the program in `CocoRun`. It sets the runtime up (returning the error code if that fails), then calls `fn` and returns what it returns. When a shutdown is requested while `fn` runs, `CocoShouldStop()` turns true and the blocking call in progress fails once, so the loop ends by itself and the objects on `fn`'s stack are destroyed as usual.
+A server shuts down gracefully through the blocking `ListenAndServe`. When you write the main loop yourself (a client that keeps reading and writing, say), `CocoRun` is also what stops it: it calls `fn` and returns what it returns. When a shutdown is requested while `fn` runs, `CocoShouldStop()` turns true and the blocking call in progress fails once, so the loop ends by itself and the objects on `fn`'s stack are destroyed as usual.
 
 ```cpp
 int main() {

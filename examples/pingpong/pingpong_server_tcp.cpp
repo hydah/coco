@@ -24,11 +24,13 @@ int PingPong(StreamConn &conn) {
 
 int main() {
   log_level = log_dbg;
-  TcpServer server(PingPong);
-  // Serves until Ctrl-C.
-  if (server.ListenAndServe(local_ip, port) != COCO_SUCCESS) {
-    coco_error("create listen socket failed");
-    return -1;
-  }
-  return 0;
+  return CocoRun([]() {
+    TcpServer server(PingPong);
+    // Serves until Ctrl-C.
+    if (server.ListenAndServe(local_ip, port) != COCO_SUCCESS) {
+      coco_error("create listen socket failed");
+      return -1;
+    }
+    return 0;
+  });
 }

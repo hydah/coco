@@ -17,7 +17,7 @@ target_include_directories(coco_tests PRIVATE
     $<TARGET_PROPERTY:st,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_definitions(coco_tests PRIVATE COCO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 set_target_properties(coco_tests PROPERTIES CXX_STANDARD 11 CXX_EXTENSIONS OFF)
-target_link_libraries(coco_tests coco)
+target_link_libraries(coco_tests coco Threads::Threads)
 coco_set_warnings(coco_tests)
 
 # One process per case, so a crash or hang is reported against that case only.
@@ -95,6 +95,7 @@ set(COCO_TEST_CASES
     HttpClientRejectsBadUrls
     HttpHelpers
     RuntimeInitIsIdempotent
+    RuntimeRejectsOtherThread
     RuntimeShutdownWakesWaiters
     RuntimeSignalWakesWaiter
     TcpServerListenAndServeBlocksUntilStop

@@ -51,17 +51,17 @@ int PingPongListener::Cycle() {
 
 int main() {
   log_level = log_dbg;
-  std::unique_ptr<UdpListener> l;
-  int ret = ListenUdp(local_ip, port, &l);
-  if (ret != COCO_SUCCESS) {
-    coco_error("create listen socket failed. ret=%d", ret);
-    return -1;
-  }
-  PingPongListener *pl = new PingPongListener(std::move(l));
-  pl->Start();
+  return CocoRun([]() {
+    std::unique_ptr<UdpListener> l;
+    int ret = ListenUdp(local_ip, port, &l);
+    if (ret != COCO_SUCCESS) {
+      coco_error("create listen socket failed. ret=%d", ret);
+      return -1;
+    }
+    PingPongListener pl(std::move(l));
+    pl.Start();
 
-  CocoWaitForShutdown();
-
-  delete pl;
-  return 0;
+    CocoWaitForShutdown();
+    return 0;
+  });
 }

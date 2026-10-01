@@ -3,6 +3,9 @@
 #include <assert.h>
 #include <errno.h>
 #include <unistd.h>
+
+#include <atomic>
+#include <thread>
 #ifdef __linux__
 #include <sys/epoll.h>
 #elif defined(__APPLE__)
@@ -249,11 +252,22 @@ static bool st_kqueue_is_supported(void) {
 }
 #endif
 
-// ST keeps one scheduler per thread.
-static thread_local bool initialized = false;
+// ST could run one scheduler per thread, but coco's own state is shared by the whole
+// process, so the runtime belongs to the first thread that sets it up.
+static std::atomic<std::thread::id> owner_thread{std::thread::id()};
+static bool initialized = false;
+
+static bool OnRuntimeThread() { return owner_thread.load() == std::this_thread::get_id(); }
 
 int CocoInit() {
     int ret = COCO_SUCCESS;
+    std::thread::id owner;
+    if (!owner_thread.compare_exchange_strong(owner, std::this_thread::get_id()) &&
+        owner != std::this_thread::get_id()) {
+        ret = ERROR_ST_WRONG_THREAD;
+        coco_error("coco runs on the thread that set it up, not this one. ret=%d", ret);
+        return ret;
+    }
     if (initialized) {
         return ret;
     }
@@ -312,10 +326,10 @@ void CocoSleepMs(uint64_t durms) {
     }
 }
 void CocoSleep(uint32_t durs) { CocoSleepMs(uint64_t(durs) * 1000); }
-int CocoGetCoroutineID() { return _st_context->get_id(); }
+int CocoGetCoroutineID() { return OnRuntimeThread() ? _st_context->get_id() : 0; }
 
 bool CocoShouldStop() {
-    if (_coroutine_key < 0) {
+    if (_coroutine_key < 0 || !OnRuntimeThread()) {
         return false;
     }
     auto c = static_cast<CoCoroutine *>(st_thread_getspecific(_coroutine_key));

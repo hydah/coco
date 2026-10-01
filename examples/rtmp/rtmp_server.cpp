@@ -196,16 +196,17 @@ class Hub {
 //   ffmpeg -re -i in.flv -c copy -f flv rtmp://127.0.0.1:1935/live/stream
 //   ffplay rtmp://127.0.0.1:1935/live/stream
 int main() {
-    CocoInit();
-    Hub hub;
-    RtmpServer server([&hub](RtmpConn& conn, const RtmpRequest& req) {
-        std::cout << (req.publish ? "publish " : "play ") << req.app << "/" << req.stream
-                  << " from " << conn.RemoteAddr() << std::endl;
-        return hub.Serve(conn, req);
+    return CocoRun([]() {
+        Hub hub;
+        RtmpServer server([&hub](RtmpConn& conn, const RtmpRequest& req) {
+            std::cout << (req.publish ? "publish " : "play ") << req.app << "/" << req.stream
+                      << " from " << conn.RemoteAddr() << std::endl;
+            return hub.Serve(conn, req);
+        });
+        std::cout << "rtmp://0.0.0.0:1935/{app}/{stream}" << std::endl;
+        if (server.ListenAndServe("0.0.0.0", 1935) != COCO_SUCCESS) {
+            return 1;
+        }
+        return 0;
     });
-    std::cout << "rtmp://0.0.0.0:1935/{app}/{stream}" << std::endl;
-    if (server.ListenAndServe("0.0.0.0", 1935) != COCO_SUCCESS) {
-        return 1;
-    }
-    return 0;
 }

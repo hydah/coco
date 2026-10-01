@@ -42,27 +42,31 @@ cd coco
 #include "coco/coco.h"
 
 int main() {
-    coco::TcpServer server([](coco::StreamConn &conn) {
-        char buf[1024];
-        ssize_t n = 0;
-        int ret;
-        while ((ret = conn.Read(buf, sizeof(buf), &n)) == COCO_SUCCESS) {
-            if ((ret = conn.Write(buf, n, nullptr)) != COCO_SUCCESS) break;
-        }
-        return ret;
+    return coco::CocoRun([]() {
+        coco::TcpServer server([](coco::StreamConn &conn) {
+            char buf[1024];
+            ssize_t n = 0;
+            int ret;
+            while ((ret = conn.Read(buf, sizeof(buf), &n)) == COCO_SUCCESS) {
+                if ((ret = conn.Write(buf, n, nullptr)) != COCO_SUCCESS) break;
+            }
+            return ret;
+        });
+        // 一直服务到 Ctrl-C / SIGTERM，关闭所有连接后返回
+        return server.ListenAndServe("127.0.0.1", 8080) == COCO_SUCCESS ? 0 : 1;
     });
-    // 一直服务到 Ctrl-C / SIGTERM，关闭所有连接后返回
-    return server.ListenAndServe("127.0.0.1", 8080) == COCO_SUCCESS ? 0 : 1;
 }
 ```
 
-每条新连接都会在一条独立的协程里调用处理函数，函数返回后连接自动释放。连接的状态直接放在局部变量里即可。
+`CocoRun` 是程序的入口：它在当前线程上建好协程运行时，再调用传进去的函数。每条新连接都会在一条独立的协程里调用处理函数，函数返回后连接自动释放。连接的状态直接放在局部变量里即可。
 
 `coco/coco.h` 包含全部公共接口，所有名字都在 `namespace coco` 里（下面的片段省略了 `coco::`）；宏以 `COCO_` 或 `coco_` 开头。
 
 ### 运行时与退出
 
-不需要手动初始化：第一次用到协程或 socket 的调用会自动初始化 ST；想提前拿到初始化失败的错误码时可以先调 `CocoInit()`。
+程序用 `return CocoRun([]() { ... });` 开始，所有 coco 调用都写在里面。`CocoRun` 在调用它的线程上初始化 ST，失败时直接返回错误码，并让程序主体能被 Ctrl-C 打断（见下一节）。不用 `CocoRun` 也能工作：第一次用到协程或 socket 的调用会自动初始化，想单独检查初始化是否成功时可以先调 `CocoInit()`。
+
+运行时只属于初始化它的那条线程，coco 创建的所有对象也只能在这条线程上使用。在别的线程上调用 `CocoInit()`、`CocoRun()` 或任何需要运行时的函数，都会返回 `ERROR_ST_WRONG_THREAD`，不会在那条线程上再建一份运行时。
 
 `ListenAndServe` / `ListenAndServeTLS` / `Serve` 会阻塞，直到 `Stop()` 或收到退出请求（`SIGINT`、`SIGTERM` 或 `CocoShutdown()`），返回前先关闭监听端口、等所有连接退出，所以 `main` 可以直接 `return`。同时跑多个服务，或者服务之外还有别的事要做时：
 
@@ -80,7 +84,7 @@ CocoWaitForShutdown();         // 等到 Ctrl-C；析构时各自关停
 
 ### 让主循环也能被 Ctrl-C 打断
 
-服务端靠阻塞的 `ListenAndServe` 就能优雅退出。自己写主循环（例如一个不断读写的客户端）时，用 `CocoRun` 包住程序主体：它先初始化运行时（失败时返回错误码），再调用 `fn` 并返回它的返回值；`fn` 运行期间收到退出请求，`CocoShouldStop()` 变为 true，正在阻塞的那个调用失败一次，循环自己结束，`fn` 栈上的对象照常析构。
+服务端靠阻塞的 `ListenAndServe` 就能优雅退出。自己写主循环（例如一个不断读写的客户端）时，`CocoRun` 还负责让循环停下来：它调用 `fn` 并返回它的返回值；`fn` 运行期间收到退出请求，`CocoShouldStop()` 变为 true，正在阻塞的那个调用失败一次，循环自己结束，`fn` 栈上的对象照常析构。
 
 ```cpp
 int main() {

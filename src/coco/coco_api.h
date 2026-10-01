@@ -21,9 +21,11 @@ int DialUdp(const std::string &host, int port, int64_t timeout_us, std::unique_p
 int ListenTcp(const std::string &local_ip, int local_port, std::unique_ptr<TcpListener> *l);
 int DialTcp(const std::string &host, int port, int64_t timeout_us, std::unique_ptr<TcpConn> *conn);
 
-// Sets up the coroutine runtime on the calling thread; later calls do nothing. Calling it
-// is optional, the first function that needs the runtime does it, but calling it first
-// reports a failure up front. Everything coco creates must stay on this thread.
+// Sets up the coroutine runtime on the calling thread; later calls do nothing. A program
+// normally starts with CocoRun(), which does this. Calling it is optional, the first
+// function that needs the runtime does it, but calling it first reports a failure up
+// front. The runtime and everything coco creates belong to that thread: from any other
+// thread, CocoInit() and every call that needs the runtime return ERROR_ST_WRONG_THREAD.
 int CocoInit();
 int CocoGetCoroutineID();
 void CocoSleepMs(uint64_t durms);

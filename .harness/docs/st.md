@@ -336,6 +336,6 @@ sequenceDiagram
 - `DoCycle()` 和 `TcpServer` 的处理函数都必须响应中断。中断标志只生效一次，`CoCoroutine::interrupted` 也只允许中断一次。拿到 `EINTR` 以后如果忽略它再去读，就会一直阻塞，`Shutdown()` 也会跟着一直等。循环条件里加上 `ShouldTermCycle()`（处理函数里用 `CocoShouldStop()`），出错就返回。
 - 不能在某条连接里调用管理它的那个 manager 的 `Shutdown()`，也不能在连接里 `delete` 这个 manager：它会等所有连接退出，其中包括它自己。
 - `CoroutineContext` 用全局的 `std::map<st_thread_t, int>` 存协程 ID，每次查询都查一次 map。`CocoShouldStop()` 已经改用 ST 自带的 `st_key_create` / `st_thread_setspecific`，协程 ID 还没有换过去。
-- 一个进程只有一份 ST，跑在初始化它的那条内核线程上（显式调用 `CocoInit()`，或第一次建协程、建 socket、`CocoSleepMs` 时自动初始化）。要用满多核需要多进程，或者每个线程各自 `st_init()` 一份；所有对象都不能跨线程使用。
+- 一个进程只有一份 ST，跑在初始化它的那条内核线程上（`CocoRun()` / `CocoInit()`，或第一次建协程、建 socket、`CocoSleepMs` 时自动初始化）。coco 的全局状态不能跨线程共用，所以别的线程上的调用返回 `ERROR_ST_WRONG_THREAD`，不会再 `st_init()` 一份。要用满多核需要多进程；所有对象都不能跨线程使用。
 
 对应的测试在 `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp` 和 `tests/lifecycle_test.cpp`，跑法见 [构建](build.md) 的“测试”一节。

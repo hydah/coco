@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 
 #include "st.h"
 
@@ -138,6 +139,42 @@ bool WaitForExit(pid_t pid, int timeout_ms, int *status) {
 COTEST(RuntimeInitIsIdempotent) {
     CHECK_EQ(CocoInit(), COCO_SUCCESS);
     CHECK_EQ(CocoInit(), COCO_SUCCESS);
+}
+
+// The runtime belongs to the thread that set it up. Another thread gets an error instead of
+// a second scheduler next to coco's shared state, from CocoInit() as from the calls that
+// would set the runtime up by themselves.
+COTEST(RuntimeRejectsOtherThread) {
+    CHECK_EQ(CocoInit(), COCO_SUCCESS);
+    int init = -1, listen = -1, dial = -1, run = -1, id = -1;
+    bool stop = true;
+    bool ran = false;
+    std::thread other([&]() {
+        init = CocoInit();
+        std::unique_ptr<TcpListener> l;
+        listen = ListenTcp(kLoopback, 0, &l);
+        std::unique_ptr<TcpConn> c;
+        dial = DialTcp(kLoopback, 1, kTimeoutUs, &c);
+        run = CocoRun([&]() {
+            ran = true;
+            return COCO_SUCCESS;
+        });
+        CocoSleepMs(1);
+        id = CocoGetCoroutineID();
+        stop = CocoShouldStop();
+    });
+    other.join();
+
+    CHECK_EQ(init, ERROR_ST_WRONG_THREAD);
+    CHECK_EQ(listen, ERROR_ST_WRONG_THREAD);
+    CHECK_EQ(dial, ERROR_ST_WRONG_THREAD);
+    CHECK_EQ(run, ERROR_ST_WRONG_THREAD);
+    CHECK(!ran);
+    CHECK_EQ(id, 0);
+    CHECK(!stop);
+
+    CHECK_EQ(CocoInit(), COCO_SUCCESS);
+    CocoSleepMs(1);
 }
 
 COTEST(RuntimeShutdownWakesWaiters) {

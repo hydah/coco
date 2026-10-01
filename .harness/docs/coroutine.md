@@ -15,13 +15,15 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 
 ## 一个线程，多段栈
 
-`CocoInit()` 做三件事，第二次调用直接返回。不显式调用时，第一次建协程（`CoCoroutine::start`）、建 socket 或 `CocoSleepMs` 会先调它：
+程序的推荐入口是 `CocoRun(fn)`，它先调 `CocoInit()`。`CocoInit()` 做三件事，第二次调用直接返回。不显式调用时，第一次建协程（`CoCoroutine::start`）、建 socket、`CocoSleepMs`、`CocoWaitForShutdown` 或 `CocoRun` 会先调它：
 
 1. 确认当前系统有 epoll 或 kqueue。
 2. `st_set_eventsys(ST_EVENTSYS_ALT)`，选 ST 在该平台上的高性能事件系统。
 3. `st_init()`。调用 `st_init()` 的那条线程从此就是主协程，之后的 `st_thread_create` 都挂在这条线程上。
 
-因此这是 1:N，不是每个协程一个内核线程，也没有把协程再分发到线程池。进程要吃满多核，需要多进程，或每个线程各自 `st_init()` 一份 ST。同一份 ST 不能跨线程使用。
+因此这是 1:N，不是每个协程一个内核线程，也没有把协程再分发到线程池。
+
+ST 的调度器状态是 `__thread` 的，本可以每个线程一份，但 coco 自己的状态是整个进程共用的：协程 ID 表（`CoroutineContext`）、`st_key_create` 得到的键、退出请求和 `CocoRun` 的标志。所以运行时属于第一个调用 `CocoInit()` 的线程，记在一个原子的 `std::thread::id` 里（用 compare-exchange 抢，两个线程同时调用也只有一个成功）。别的线程上 `CocoInit()` 返回 `ERROR_ST_WRONG_THREAD`，靠它初始化的入口也都跟着失败；`CocoGetCoroutineID()` 返回 0，`CocoShouldStop()` 返回 false，不去碰共享状态（日志头里会调 `CocoGetCoroutineID()`，所以报错的那条日志本身也是安全的）。进程要吃满多核，需要多进程。
 
 每个协程有自己的栈。`CoCoroutine` 把 `stack_size` 传给 `st_thread_create`，`0` 表示用 ST 的默认大小（64KB）。上下文保存在 `jmp_buf` 形态的缓冲区里；macOS 上由 `thirdparty/st/md.S` 的 `_st_md_cxt_save` / `_st_md_cxt_restore` 保存被调用者保存寄存器和栈指针，因为系统 `setjmp` 会混淆这些值。
 
