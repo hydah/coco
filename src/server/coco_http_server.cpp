@@ -5,44 +5,58 @@
 #include "log/log.hpp"
 #include "net/layer4/coco_tcp.hpp"
 
-HttpServer::HttpServer(bool https) : https_(https) {}
+HttpServer::HttpServer(HttpHandler *handler, HttpServeOptions options)
+    : handler_(handler), options_(options) {}
 
-HttpServer::~HttpServer() {
-    if (server_) {
-        delete server_;
-        server_ = nullptr;
-    }
-}
+HttpServer::HttpServer(HttpHandlerFunc handler, HttpServeOptions options)
+    : owned_(std::make_shared<HttpFuncHandler>(std::move(handler))),
+      handler_(owned_.get()),
+      options_(options) {}
 
-TcpServerOptions HttpServer::Options() const {
-    TcpServerOptions opt;
-    // Also bounds the TLS handshake, which runs before ServeHttpConn sets its own timeout.
-    opt.recv_timeout_us = HTTP_RECV_TIMEOUT_US;
-    if (https_) {
-        opt.tls_key_file = "./server.key";
-        opt.tls_crt_file = "./server.crt";
-    }
-    return opt;
-}
+HttpServer::~HttpServer() { server_.reset(); }
 
-int HttpServer::ListenAndServe(std::string local_ip, int local_port, HttpServeMux *mux) {
+int HttpServer::ListenAndServe(const std::string &ip, int port) {
     std::unique_ptr<TcpListener> l;
-    int ret = ListenTcp(local_ip, local_port, &l);
+    int ret = ListenTcp(ip, port, &l);
     if (ret != COCO_SUCCESS) {
-        coco_error("create http listen socket failed. ret=%d", ret);
+        coco_error("http: listen on %s:%d failed. ret=%d", ip.c_str(), port, ret);
         return ret;
     }
-    return Serve(std::move(l), mux);
+    return Start(std::move(l), "", "");
 }
 
-int HttpServer::Serve(std::unique_ptr<StreamListener> l, HttpServeMux *mux) {
+int HttpServer::ListenAndServeTLS(const std::string &ip, int port, const std::string &crt_file,
+                                  const std::string &key_file) {
+    std::unique_ptr<TcpListener> l;
+    int ret = ListenTcp(ip, port, &l);
+    if (ret != COCO_SUCCESS) {
+        coco_error("https: listen on %s:%d failed. ret=%d", ip.c_str(), port, ret);
+        return ret;
+    }
+    return Start(std::move(l), crt_file, key_file);
+}
+
+int HttpServer::Serve(std::unique_ptr<StreamListener> l) { return Start(std::move(l), "", ""); }
+
+int HttpServer::Start(std::unique_ptr<StreamListener> l, const std::string &crt_file,
+                      const std::string &key_file) {
     if (server_ != nullptr) {
         coco_error("http server already serving");
         return ERROR_THREAD_STARTED;
     }
 
-    server_ = new TcpServer([mux](StreamConn &conn) { return ServeHttpConn(conn, mux); },
-                            Options());
+    TcpServerOptions opt;
+    // They also bound the TLS handshake, which runs before ServeHttpConn sets its own.
+    opt.recv_timeout_us = options_.read_timeout_us;
+    opt.send_timeout_us = options_.write_timeout_us;
+    opt.tls_crt_file = crt_file;
+    opt.tls_key_file = key_file;
+
+    HttpHandler *handler = handler_;
+    HttpServeOptions options = options_;
+    server_.reset(new TcpServer(
+        [handler, options](StreamConn &conn) { return ServeHttpConn(conn, handler, options); },
+        opt));
     return server_->Serve(std::move(l));
 }
 

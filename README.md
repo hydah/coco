@@ -66,35 +66,40 @@ int main() {
 ### HTTP / HTTPS 服务
 
 ```cpp
-class Hello : public IHttpHandler {
- public:
-    int serve_http(HttpResponseWriter *w, HttpMessage *r) override {
-        std::string body = "hello world";
-        w->header()->set_content_length((int)body.length());
-        w->header()->set_content_type("text/plain");
-        w->Write(const_cast<char *>(body.c_str()), (int)body.length());
-        return COCO_SUCCESS;
-    }
-};
-
 HttpServeMux mux;
-mux.handle("/", new Hello());
+// 模式语法同 Go 1.22 的 ServeMux：可带方法、{name} 通配段、{path...} 尾段，/static/ 匹配子树
+mux.HandleFunc("GET /hello/{name}", [](HttpResponseWriter &w, HttpRequest &r) {
+    w.Write("hello " + r.PathValue("name"));   // 小响应自动带 Content-Length，一次写出
+});
+mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
+    std::string body;
+    r.body.ReadAll(&body);
+    w.Header().Set("Content-Type", "application/json");
+    w.Write(body);
+});
 
-HttpServer server(true);   // true 为 HTTPS，读取当前目录的 server.key / server.crt
-server.ListenAndServe("0.0.0.0", 9082, &mux);
+HttpServer server(&mux);
+server.ListenAndServe("0.0.0.0", 8080);
+// HTTPS：server.ListenAndServeTLS("0.0.0.0", 9082, "server.crt", "server.key");
 CocoLoopMs(1000);
 ```
 
-客户端通过注入的 `StreamDialer` 建连，默认是明文 TCP，HTTPS 传 `TlsDialer()`：
+客户端仿照 Go 的 `http.Client`：按主机复用 keep-alive 连接，自动跟随重定向。HTTPS 需要注入 `TlsDialer()`：
 
 ```cpp
-HttpClient hc;
-hc.Initialize("127.0.0.1", 9082, HTTP_CLIENT_TIMEOUT_US, TlsDialer());
-HttpMessage *msg;
-if (hc.Get("/", "", &msg, "") == COCO_SUCCESS) {
+HttpClient client;
+client.SetTlsDialer(TlsDialer());   // 只用 http:// 时可以不设
+
+std::unique_ptr<HttpResponse> resp;
+if (client.Get("https://127.0.0.1:9082/hello/coco", &resp) == COCO_SUCCESS) {
     std::string body;
-    msg->body_read_all(body);
+    resp->body.ReadAll(&body);   // resp 析构时连接回到连接池
 }
+
+HttpRequest req("PUT", "http://127.0.0.1:8080/items/1", "{\"n\":1}");
+req.header.Set("Content-Type", "application/json");
+client.Do(req, &resp);
+// 共享的默认客户端：HttpGet(url, &resp)、HttpPost(url, type, body, &resp)
 ```
 
 ### WebSocket 服务端与客户端
@@ -102,15 +107,15 @@ if (hc.Get("/", "", &msg, "") == COCO_SUCCESS) {
 ```cpp
 // 服务端：处理函数就是这条连接的生命周期，返回时自动发送 CLOSE 1000
 HttpServeMux mux;
-mux.handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
+mux.Handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
     std::string data;
     WebSocketHeader::Type type;
     while (ws->ReadMessage(&data, &type) == COCO_SUCCESS) {
         ws->Send(data, type);
     }
 }));
-HttpServer server(false);  // true 为 wss
-server.ListenAndServe("0.0.0.0", 9083, &mux);
+HttpServer server(&mux);   // wss 用 ListenAndServeTLS
+server.ListenAndServe("0.0.0.0", 9083);
 ```
 
 ```cpp
@@ -194,12 +199,12 @@ src/
 ├── base/            协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager
 ├── common/          错误码
 ├── log/             日志
-├── utils/           IoReader / IoWriter、FastBuffer、base64 / sha1 / md5
+├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5
 ├── net/
 │   ├── layer4/      TCP、UDP
 │   ├── tls/         TlsConfig、TlsConn、TlsListener、TlsDialer
 │   └── layer7/
-│       ├── http/    报文解析、HttpServeMux、ServeHttpConn、HttpClient
+│       ├── http/    报文、HttpServeMux、ServeHttpConn、HttpClient
 │       └── ws/      帧编解码、WebSocketConn、WebSocketClient、WebSocketHandler
 └── server/          TcpServer、HttpServer
 ```
@@ -233,7 +238,7 @@ cd build && ctest --output-on-failure        # 已构建时直接跑
 
 - 单线程：ST 跑在调用 `CocoInit()` 的线程上，要用多核需要多进程。
 - TLS 不校验对端证书（`SSL_VERIFY_NONE`）。
-- 不支持 HTTP/2，没有连接池。
+- 不支持 HTTP/2。
 - WebSocket 单条消息上限 4MB（`MAX_WS_PACKET`）。
 
 ## 许可证

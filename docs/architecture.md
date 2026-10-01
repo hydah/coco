@@ -22,13 +22,13 @@ src/
 ├── base/                      协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager
 ├── common/error.hpp           错误码
 ├── log/
-├── utils/                     IoReader / IoWriter、FastBuffer、地址、base64/sha1/md5
+├── utils/                     IoReader / IoWriter、BufReader、地址、base64/sha1/md5
 ├── net/
 │   ├── coco_socket.hpp/.cpp   拥有 st_netfd 的 CocoSocket：超时和错误码；建 socket、bind、connect
 │   ├── layer4/                传输层：StreamConn / StreamListener / DatagramConn 接口，TCP、UDP 实现
 │   ├── tls/                   安全层：TlsConfig、TlsConn、TlsListener、TlsDialer
 │   └── layer7/                应用层，每个协议一个目录
-│       ├── http/              编解码 http_*.h（报文、解析、HttpServeMux）；会话 coco_http（ServeHttpConn、HttpClient）
+│       ├── http/              编解码 http_*.h（头部与工具、报文与 body、HttpResponseWriter、HttpServeMux）；会话 coco_http（ServeHttpConn、HttpClient）
 │       └── ws/                编解码 ws_frame（帧头、WebSocketFrameDecoder）；会话 coco_ws（WebSocketConn、WebSocketClient、WebSocketHandler）
 └── server/                    服务运行框架：TcpServer，以及用它组装的 HttpServer
 ```
@@ -70,11 +70,11 @@ core       协程、日志、错误码、工具             st_thread_create
 
 一条 TCP 连接的读路径是 `TcpConn::Read` → `CocoSocket::Read` → `st_read`。TLS 连接的明文读路径是 `TlsConn::Read` → `SSL_read`，缺密文时再调用下层的 `Read`（TCP 时就是上面那条路径）喂给 `bio_in`。
 
-I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`。HTTP 解析用 `FastBuffer` 攒字节。WebSocket 组包有 4MB 上限（`MAX_WS_PACKET`）。
+I/O 接口在 `src/utils/utils.hpp`：`IoReader`、`IoWriter`、`IoReaderWriter`。`BufReader`（`src/utils/bufio.hpp`）是读缓冲，仿照 Go 的 `bufio.Reader`：协议解析在缓冲区里看字节、消费用掉的部分，剩下的留给同一条连接上的下一条报文。WebSocket 组包有 4MB 上限（`MAX_WS_PACKET`）。
 
 ## 层间接口
 
-`layer7` 的服务端入口是一个函数，参数是一条已经建立好的 `StreamConn`，例如 `ServeHttpConn(StreamConn &conn, HttpServeMux *mux)`。它不知道连接是怎么来的：可以是 TCP，可以是握手完成的 TLS，也可以是测试里的内存管道。TLS 同样只面对 `StreamConn`，输入一条，输出一条。
+`layer7` 的服务端入口是一个函数，参数是一条已经建立好的 `StreamConn`，例如 `ServeHttpConn(StreamConn &conn, HttpHandler *handler)`。它不知道连接是怎么来的：可以是 TCP，可以是握手完成的 TLS，也可以是测试里的内存管道。TLS 同样只面对 `StreamConn`，输入一条，输出一条。
 
 因此在任意两层之间插一层包装，就能观察或改变经过的字节，而不需要改协议代码：打印字节相当于在层间抓包，注入延迟或截断可以做故障实验。
 
@@ -111,10 +111,14 @@ server.ListenAndServe("127.0.0.1", 8080);
 
 - **TCP / UDP**：`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp`。
 - **TLS**：服务端和客户端都有，可以套在任何 `StreamConn` 上。`TlsConfig` 共享 `SSL_CTX`，证书只加载一次。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
-- **HTTP/1.1**：`ServeHttpConn` 按 `HttpServeMux` 派发，支持 keep-alive 和 chunked。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` 返回时已经开始服务；HTTPS 由 `TcpServer` 的 `TlsListener` 提供，`ServeHttpConn` 第一次读请求时完成握手。`HttpClient` 能发 GET/POST，连接由 `Initialize` 传入的 `StreamDialer` 建立，HTTPS 时传 `TlsDialer()`。
-- **WebSocket**：在 `src/net/layer7/ws/coco_ws.cpp`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 要先 `SetTlsDialer(TlsDialer())`，否则返回 `ERROR_HTTPS_NOT_SUPPORTED`）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer` 或带 TLS 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。`ServeHttpConn` 处理完一个 Upgrade 请求后不再按 HTTP 读这条连接。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
+- **HTTP/1.1**：接口仿照 Go 的 `net/http`。
+  - 服务端：处理函数是 `HttpHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r)`，或者用 `HandleFunc` 注册 lambda。`HttpServeMux` 支持 Go 1.22 的模式语法：可带方法（`"GET /users/{id}"`，GET 也接 HEAD）、主机、`{name}` 单段通配、`{name...}` 尾段、以 `/` 结尾的子树和 `{$}`。路由是按路径段建的树，越具体越优先：字面段优先于 `{name}`，再优先于子树；带方法的优先于不带方法的。和 Go 一样，不带方法的模式接受任何方法；只有路径匹配而所有模式的方法都不匹配时才回 405 和 `Allow`。含 `.`、`..`、`//` 的路径先 301 到规范形式；注册了 `/tree/` 而没有模式精确匹配 `/tree` 时，`/tree` 301 到 `/tree/`。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` / `ListenAndServeTLS` 返回时已经开始服务；HTTPS 由 `TcpServer` 的 `TlsListener` 提供，`ServeHttpConn` 第一次读请求时完成握手。
+  - 连接循环：一条连接在整个生命周期里只用一个 `BufReader`、一个 `HttpResponseWriter` 和一个 `HttpRequest`，缓冲区跨请求复用，流水线请求中提前读到的字节不会丢。请求头只把头部字节交给 http-parser 解析，body 由 `HttpBodyReader` 按 Content-Length 或 chunked 从同一个缓冲区读。处理函数没读完的 body 在 256KB 以内会被跳过以保住 keep-alive，更长就关连接。`Expect: 100-continue` 在处理函数第一次读 body 时才回 100。请求头超限回 431，格式错误或 HTTP/1.1 缺 Host 回 400，之后关连接。
+  - 写响应：语义同 Go 的 `ResponseWriter`。写入先进 4KB 缓冲；处理函数返回时还没超过缓冲区、又没设 Content-Length，就自动补上 Content-Length，状态行、头部和 body 一次写出；超过缓冲区或调用 `Flush()` 后改成 chunked（HTTP/1.0 则以关连接结束），大块数据用 `writev` 直接发出，不拷进缓冲区。没设 Content-Type 时按前 512 字节嗅探，自动加 Date。`Hijack()` 交出连接和读缓冲，之后服务端不再碰这条连接，WebSocket 就是这样接管的；Upgrade 请求没被接管时，响应后关连接。
+  - 客户端：`HttpClient` 仿照 Go 的 `http.Client`，`Get` / `Post` / `Do(HttpRequest&)` 返回 `std::unique_ptr<HttpResponse>`，从 `resp->body` 读 body。keep-alive 连接按 `scheme://host:port` 放进连接池复用（每个主机默认留 2 条空闲）；`HttpResponse` 析构时，body 已读完（或者剩下的部分已经全在缓冲区里）就把连接还回池子，否则关掉。从池里取出的连接若已被服务端关闭，请求会在新连接上重试一次：写失败时总是重试，读失败时只重试 GET、HEAD、OPTIONS、TRACE。默认跟随最多 10 次重定向，301/302/303 把非 GET/HEAD 改成不带 body 的 GET，跨主机时去掉 Authorization 和 Cookie。连接由注入的 `StreamDialer` 建立，`http://` 默认 `TcpDialer()`，`https://` 需要 `SetTlsDialer(TlsDialer())`。`HttpGet` / `HttpPost` 用一个共享的默认客户端。
+- **WebSocket**：在 `src/net/layer7/ws/coco_ws.cpp`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 要先 `SetTlsDialer(TlsDialer())`，否则返回 `ERROR_HTTPS_NOT_SUPPORTED`）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer` 或带 TLS 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。握手时 `WebSocketHandler` 用 `Hijack()` 接管连接，之后 `ServeHttpConn` 不再按 HTTP 读它。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
 
-库里没有连接池，也没有 HTTP/2。一条连接对应一个 `ConnRoutine`，用完即回收。
+库里没有 HTTP/2。服务端一条连接对应一个 `ConnRoutine`，用完即回收；连接池只在 `HttpClient` 里。
 
 ## 错误码
 
@@ -126,6 +130,7 @@ server.ListenAndServe("127.0.0.1", 8080);
 | 1013–1018 | ST 初始化、建协程、连接 | `ERROR_ST_CONNECT` 1018 |
 | 1070 附近 | 协程停止 | `ERROR_THREAD_INTERRUPED` 1070 |
 | 3007–3011 | HTTP 解析和路由 | `ERROR_HTTP_PARSE_HEADER` 3009 |
+| 4000–4034 | HTTP 会话 | `ERROR_HTTP_BODY_EOF` 4030（body 已读完），`ERROR_HTTP_HEADER_TOO_LARGE` 4031 |
 | 4041–4045 | TLS | `ERROR_HTTPS_HANDSHAKE` 4042 |
 | 4051–4053 | WebSocket | `ERROR_WS_PROTOCOL` 4051，`ERROR_WS_MESSAGE_TOO_LARGE` 4052 |
 
@@ -133,4 +138,4 @@ server.ListenAndServe("127.0.0.1", 8080);
 
 ## 示例与测试
 
-`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`LayerDependencies` 检查分层。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端）用来手动验证。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`LayerDependencies` 检查分层。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端）用来手动验证。

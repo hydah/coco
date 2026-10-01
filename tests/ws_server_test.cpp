@@ -179,9 +179,9 @@ COTEST(WsServerEchoesToClient) {
     const int port = 19221;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     std::vector<std::string> got;
     WebSocketClient ws;
@@ -218,9 +218,9 @@ COTEST(WsServerHandshake) {
     const int port = 19222;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     std::string rsp = c.Handshake(UpgradeRequest() + Frame(WS::TEXT, "early"));
@@ -239,9 +239,9 @@ COTEST(WsServerRejectsBadUpgrade) {
     const int port = 19223;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     {
         RawClient c(port);
@@ -270,9 +270,9 @@ COTEST(WsServerAnswersPingAndClose) {
     const int port = 19224;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -298,9 +298,9 @@ COTEST(WsServerRejectsUnmaskedFrame) {
     const int port = 19225;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -314,14 +314,14 @@ COTEST(WsServerRejectsUnmaskedFrame) {
 COTEST(WsServerHandlerReturnCloses) {
     const int port = 19228;
     HttpServeMux mux;
-    mux.handle("/ws", new WebSocketHandler([](WebSocketConn *ws) {
+    mux.Handle("/ws", new WebSocketHandler([](WebSocketConn *ws) {
         std::string data;
         if (ws->ReadMessage(&data) == COCO_SUCCESS) {
             ws->Send("bye " + data);
         }
     }));
-    HttpServer server(false);
-    CHECK_EQ(server.ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    HttpServer server(&mux);
+    CHECK_EQ(server.ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     RawClient c(port);
     CHECK(c.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -338,9 +338,9 @@ COTEST(WsServerStopClosesOpenConns) {
     const int port = 19226;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
-    HttpServer *server = new HttpServer(false);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), COCO_SUCCESS);
+    mux.Handle("/ws", ev.Handler());
+    HttpServer *server = new HttpServer(&mux);
+    CHECK_EQ(server->ListenAndServe(kLoopback, port), COCO_SUCCESS);
 
     RawClient a(port), b(port);
     CHECK(a.Handshake(UpgradeRequest()).find(" 101 ") != std::string::npos);
@@ -358,7 +358,7 @@ COTEST(WsServerOverTls) {
     const int port = 19227;
     Events ev;
     HttpServeMux mux;
-    mux.handle("/ws", ev.Handler());
+    mux.Handle("/ws", ev.Handler());
     TcpServerOptions opt;
     opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
     opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";

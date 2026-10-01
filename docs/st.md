@@ -171,7 +171,7 @@ _st_thread_main()                   ST 的入口
       生成协程 ID（CoroutineContext）
       handler->Cycle()              虚函数 → ConnRoutine::Cycle
         DoCycle()                   虚函数 → Session::DoCycle：可选 TLS 握手，然后调用处理函数
-          ServeHttpConn(conn, mux)  真正的业务
+          ServeHttpConn(conn, handler)  真正的业务
         按返回值打日志，return
     记录错误码，cycle_done = true
     if (detached_) delete handler   连接在这里释放自己
@@ -284,7 +284,7 @@ void CoCoroutine::stop() {
 
 第一，找到所有连接。监听循环里 `new Session(...)` 之后调用 `Start()`，指针就丢掉了。关停时如果没有名单，没有任何地方知道还有哪些连接活着，也就无法中断它们。
 
-第二，作为关停屏障，等所有连接退出。连接运行时会引用别人拥有的对象：`Session` 调用的是 `TcpServer` 的处理函数，处理函数里又用着 `HttpServer` 交进来的 mux，每个连接析构时还要调用 `manager_->Remove`。如果 `TcpServer` 析构时只中断连接就返回，这些连接醒来时，处理函数、mux 和 manager 都已经释放了。`Shutdown()` 保证这些对象在所有连接析构完之后才释放：
+第二，作为关停屏障，等所有连接退出。连接运行时会引用别人拥有的对象：`Session` 调用的是 `TcpServer` 的处理函数，处理函数里又用着交给 `HttpServer` 的 handler（通常是 mux），每个连接析构时还要调用 `manager_->Remove`。如果 `TcpServer` 析构时只中断连接就返回，这些连接醒来时，处理函数、handler 和 manager 都已经释放了。`Shutdown()` 保证这些对象在所有连接析构完之后才释放：
 
 ```cpp
 void ConnManager::Shutdown() {

@@ -1,49 +1,40 @@
-#include <iostream>
-#include <memory>
 #include <string>
 
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "net/coco_socket.hpp"
 #include "server/coco_http_server.hpp"
 
-using namespace std;
-
-class DefHandler : public IHttpHandler {
- public:
-    DefHandler() = default;
-    virtual ~DefHandler() = default;
-
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r) {
-        std::string res = "hello world";
-        w->header()->set_content_length((int)res.length());
-        w->header()->set_content_type("text/jsonp");
-
-        w->Write(const_cast<char *>(res.c_str()), (int)res.length());
-
-        return COCO_SUCCESS;
-    }
-};
-
+// HTTPS on 9082, run from examples/http-server so ./server.crt and ./server.key are found.
+// Try: curl -k https://127.0.0.1:9082/hello/coco
 int main() {
-    log_level = log_dbg;
     CocoInit();
 
-    // run http server
-    std::string _ip = "0.0.0.0";
-    int32_t _port = 9082;
+    HttpServeMux mux;
+    mux.HandleFunc("GET /hello/{name}", [](HttpResponseWriter &w, HttpRequest &r) {
+        w.Write("hello " + r.PathValue("name") + "\n");
+    });
+    mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
+        std::string body;
+        if (r.body.ReadAll(&body) != COCO_SUCCESS) {
+            HttpError(w, "bad body", 400);
+            return;
+        }
+        w.Header().Set("Content-Type", r.header.Get("Content-Type"));
+        w.Write(body);
+    });
+    mux.HandleFunc("/", [](HttpResponseWriter &w, HttpRequest &r) {
+        w.Header().Set("Content-Type", "application/json");
+        w.Write("{\"path\":\"" + r.path + "\",\"q\":\"" + r.Query().Get("q") + "\"}\n");
+    });
 
-    // if https is true, start as https server, or http server
-    auto httpServer = std::unique_ptr<HttpServer>(new HttpServer(true));
-    auto _mux = std::unique_ptr<HttpServeMux>(new HttpServeMux());
-    _mux->handle("/", new DefHandler());
-    if (httpServer->ListenAndServe(_ip, _port, _mux.get()) != 0) {
+    HttpServer server(&mux);
+    if (server.ListenAndServeTLS("0.0.0.0", 9082, "./server.crt", "./server.key") !=
+        COCO_SUCCESS) {
         coco_error("listen failed");
         return -1;
     }
 
     CocoLoopMs(1000);
-
     return 0;
 }

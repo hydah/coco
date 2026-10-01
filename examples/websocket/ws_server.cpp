@@ -11,7 +11,7 @@ int main() {
     CocoInit();
 
     HttpServeMux mux;
-    mux.handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
+    mux.Handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
         std::string data;
         WebSocketHeader::Type type;
         while (ws->ReadMessage(&data, &type) == COCO_SUCCESS) {
@@ -20,9 +20,9 @@ int main() {
         }
     }));
 
-    // true for wss, with ./server.key and ./server.crt.
-    HttpServer server(false);
-    if (server.ListenAndServe("0.0.0.0", 9083, &mux) != COCO_SUCCESS) {
+    // ListenAndServeTLS for wss.
+    HttpServer server(&mux);
+    if (server.ListenAndServe("0.0.0.0", 9083) != COCO_SUCCESS) {
         return -1;
     }
     CocoLoopMs(1000);

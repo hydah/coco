@@ -1,272 +1,548 @@
 #include "net/layer7/http/http_message.h"
 
-#include <assert.h>
-#include <strings.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <algorithm>
 
 #include "common/error.hpp"
 #include "log/log.hpp"
-#include "net/layer7/http/http_io.h"
-HttpMessage::HttpMessage() {
-    chunked = false;
-    infinite_chunked = false;
-    keep_alive = true;
-    jsonp = false;
 
-    _uri = new HttpUri();
-    parser_ = new HttpParser();
-}
+// Chunk-size lines and trailer lines longer than this are rejected.
+static const size_t kMaxLineBytes = 4096;
 
-HttpMessage::~HttpMessage() {
-    coco_freep(_body);
-    coco_freep(_uri);
-    coco_freep(parser_);
-}
-
-int HttpMessage::Initialize(enum http_parser_type type) { return parser_->initialize(type); }
-
-int HttpMessage::Parse(IoReaderWriter *io, void *c) {
-    int ret = COCO_SUCCESS;
-    observer_ = c;
-    io_ = io;
-
-    _body = new HttpResponseReader(this, io_);
-
-    do {
-        if ((ret = parser_->ParseMessage(io_)) != COCO_SUCCESS) {
-            coco_error("parse message failed, ret = %d", ret);
-            break;
+// Buffers br up to and including the next LF; *len counts the LF.
+static int BufferLine(BufReader *br, size_t *len) {
+    size_t from = 0;
+    while (true) {
+        const char *p = br->Peek();
+        size_t n = br->Buffered();
+        const void *lf = memchr(p + from, '\n', n - from);
+        if (lf != nullptr) {
+            *len = (size_t)((const char *)lf - p) + 1;
+            return COCO_SUCCESS;
         }
-        _url = parser_->GetUrl();
-        header_ = parser_->GetHeader();
-        headers_ = parser_->GetHeaderField();
-
-        // whether chunked.
-        std::string transfer_encoding = get_request_header("Transfer-Encoding");
-        chunked = (transfer_encoding == "chunked");
-        // whether keep alive.
-        keep_alive = http_should_keep_alive(header_);
-
-        // set the buffer.
-        if ((ret = _body->initialize(parser_->GetBuffer())) != COCO_SUCCESS) {
-            break;
+        if (n >= kMaxLineBytes) {
+            return ERROR_HTTP_INVALID_CHUNK_HEADER;
         }
-
-        // parse uri from url.
-        std::string _host = get_request_header("Host");
-
-        // use server public ip when no host specified.
-        // to make telnet happy.
-        if (_host.empty()) {
-            _host = get_public_internet_address();
-        }
-
-        // parse uri to schema/server:port/path?query
-        std::string uri_ = "http://" + _host + _url;
-        if ((ret = _uri->initialize(uri_)) != COCO_SUCCESS) {
-            break;
-        }
-
-        // must format as key=value&...&keyN=valueN
-        std::string q = _uri->get_query();
-        size_t pos = std::string::npos;
-        while (!q.empty()) {
-            std::string k = q;
-            if ((pos = q.find("=")) != std::string::npos) {
-                k = q.substr(0, pos);
-                q = q.substr(pos + 1);
-            } else {
-                q = "";
-            }
-
-            std::string v = q;
-            if ((pos = q.find("&")) != std::string::npos) {
-                v = q.substr(0, pos);
-                q = q.substr(pos + 1);
-            } else {
-                q = "";
-            }
-
-            _query[k] = v;
-        }
-
-        // parse ext.
-        _ext = _uri->get_path();
-        if ((pos = _ext.rfind(".")) != std::string::npos) {
-            _ext = _ext.substr(pos);
-        } else {
-            _ext = "";
-        }
-
-        // parse jsonp request message.
-        if (!query_get("callback").empty()) {
-            jsonp = true;
-        }
-        if (jsonp) {
-            jsonp_method = query_get("method");
-        }
-    } while (0);
-
-    return ret;
-}
-
-int HttpMessage::update_buffer(FastBuffer *body) {
-    int ret = COCO_SUCCESS;
-    if ((ret = _body->initialize(body)) != COCO_SUCCESS) {
-        return ret;
-    }
-    return ret;
-}
-
-HttpResponseReader *HttpMessage::get_http_response_reader() { return _body; }
-
-uint8_t HttpMessage::method() {
-    if (jsonp && !jsonp_method.empty()) {
-        if (jsonp_method == "GET") {
-            return HTTP_GET;
-        } else if (jsonp_method == "PUT") {
-            return HTTP_PUT;
-        } else if (jsonp_method == "POST") {
-            return HTTP_POST;
-        } else if (jsonp_method == "DELETE") {
-            return HTTP_DELETE;
-        }
-    }
-
-    return (uint8_t)header_->method;
-}
-
-std::string HttpMessage::method_str() {
-    if (jsonp && !jsonp_method.empty()) {
-        return jsonp_method;
-    }
-
-    if (is_http_get()) {
-        return "GET";
-    }
-    if (is_http_put()) {
-        return "PUT";
-    }
-    if (is_http_post()) {
-        return "POST";
-    }
-    if (is_http_delete()) {
-        return "DELETE";
-    }
-    if (is_http_options()) {
-        return "OPTIONS";
-    }
-
-    return "OTHER";
-}
-
-std::string HttpMessage::uri() {
-    std::string uri_ = _uri->get_schema();
-    if (uri_.empty()) {
-        uri_ += "http";
-    }
-    uri_ += "://";
-
-    uri_ += host();
-    uri_ += path();
-
-    return uri_;
-}
-
-int HttpMessage::parse_rest_id(std::string pattern) {
-    std::string p = _uri->get_path();
-    if (p.length() <= pattern.length()) {
-        return -1;
-    }
-
-    std::string id = p.substr((int)pattern.length());
-    if (!id.empty()) {
-        return ::atoi(id.c_str());
-    }
-
-    return -1;
-}
-
-int HttpMessage::enter_infinite_chunked() {
-    int ret = COCO_SUCCESS;
-
-    if (infinite_chunked) {
-        return ret;
-    }
-
-    if (is_chunked() || content_length() != -1) {
-        ret = ERROR_HTTP_DATA_INVALID;
-        coco_error("infinite chunkted not supported in specified codec. ret=%d", ret);
-        return ret;
-    }
-
-    infinite_chunked = true;
-
-    return ret;
-}
-
-int HttpMessage::body_read_all(std::string &body) {
-    int ret = COCO_SUCCESS;
-
-    // cache to read.
-    char *buf = new char[HTTP_READ_CACHE_BYTES];
-    CocoAutoFreeA(char, buf);
-
-    // whatever, read util EOF.
-    while (!_body->eof()) {
-        int nb_read = 0;
-        if ((ret = _body->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read)) != COCO_SUCCESS) {
+        from = n;
+        int ret = br->Fill(kMaxLineBytes);
+        if (ret != COCO_SUCCESS) {
             return ret;
         }
+    }
+}
 
-        if (nb_read > 0) {
-            body.append(buf, nb_read);
+static bool IsBlankLine(const char *p, size_t len) {
+    return (len == 1 && p[0] == '\n') || (len == 2 && p[0] == '\r' && p[1] == '\n');
+}
+
+void HttpBodyReader::Reset(BufReader *br, Mode mode, int64_t length) {
+    br_ = br;
+    mode_ = mode;
+    remain_ = mode == kLength ? length : 0;
+    chunk_crlf_ = false;
+    eof_ = mode == kNone || (mode == kLength && length <= 0);
+    err_ = COCO_SUCCESS;
+    continue_ = nullptr;
+}
+
+int HttpBodyReader::ReadChunkHeader() {
+    size_t len = 0;
+    int ret;
+    if (chunk_crlf_) {
+        if ((ret = BufferLine(br_, &len)) != COCO_SUCCESS) {
+            return ret;
+        }
+        if (!IsBlankLine(br_->Peek(), len)) {
+            return ERROR_HTTP_INVALID_CHUNK_HEADER;
+        }
+        br_->Consume(len);
+        chunk_crlf_ = false;
+    }
+
+    if ((ret = BufferLine(br_, &len)) != COCO_SUCCESS) {
+        return ret;
+    }
+    const char *p = br_->Peek();
+    int64_t size = 0;
+    size_t digits = 0;
+    for (; digits < len; ++digits) {
+        char c = p[digits];
+        int v = (c >= '0' && c <= '9')   ? c - '0'
+                : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                                         : -1;
+        if (v < 0) {
+            break;
+        }
+        if (digits >= 15) {
+            return ERROR_HTTP_INVALID_CHUNK_HEADER;
+        }
+        size = size * 16 + v;
+    }
+    // Anything after the size must be chunk extensions or whitespace.
+    char next = digits < len ? p[digits] : '\n';
+    if (digits == 0 || (next != ';' && next != ' ' && next != '\t' && next != '\r' && next != '\n')) {
+        return ERROR_HTTP_INVALID_CHUNK_HEADER;
+    }
+    br_->Consume(len);
+
+    if (size > 0) {
+        remain_ = size;
+        return COCO_SUCCESS;
+    }
+
+    // The last chunk, then trailer fields up to a blank line; the trailers are dropped.
+    while (true) {
+        if ((ret = BufferLine(br_, &len)) != COCO_SUCCESS) {
+            return ret;
+        }
+        bool blank = IsBlankLine(br_->Peek(), len);
+        br_->Consume(len);
+        if (blank) {
+            break;
+        }
+    }
+    eof_ = true;
+    return COCO_SUCCESS;
+}
+
+int HttpBodyReader::Read(void *buf, size_t size, ssize_t *nread) {
+    if (nread) {
+        *nread = 0;
+    }
+    if (err_ != COCO_SUCCESS) {
+        return err_;
+    }
+    if (eof_) {
+        return ERROR_HTTP_BODY_EOF;
+    }
+    if (size == 0) {
+        return COCO_SUCCESS;
+    }
+
+    if (continue_ != nullptr) {
+        static const char kContinue[] = "HTTP/1.1 100 Continue\r\n\r\n";
+        IoWriter *w = continue_;
+        continue_ = nullptr;
+        if ((err_ = w->Write((void *)kContinue, sizeof(kContinue) - 1, nullptr)) != COCO_SUCCESS) {
+            return err_;
         }
     }
 
-    return ret;
-}
-
-HttpResponseReader *HttpMessage::body_reader() { return _body; }
-
-void HttpMessage::set_content_length(int64_t len) { header_->content_length = len; }
-
-int64_t HttpMessage::content_length() { return header_->content_length; }
-
-std::string HttpMessage::query_get(std::string key) {
-    std::string v;
-
-    if (_query.find(key) != _query.end()) {
-        v = _query[key];
-    }
-
-    return v;
-}
-
-int HttpMessage::request_header_count() { return (int)headers_->size(); }
-
-std::string HttpMessage::request_header_key_at(int index) {
-    assert(index < request_header_count());
-    HttpHeaderField item = (*headers_)[index];
-    return item.first;
-}
-
-std::string HttpMessage::request_header_value_at(int index) {
-    assert(index < request_header_count());
-    HttpHeaderField item = (*headers_)[index];
-    return item.second;
-}
-
-std::string HttpMessage::get_request_header(std::string name) {
-    std::vector<HttpHeaderField>::iterator it;
-
-    for (it = headers_->begin(); it != headers_->end(); ++it) {
-        HttpHeaderField &elem = *it;
-        if (strcasecmp(elem.first.c_str(), name.c_str()) == 0) {
-            return elem.second;
+    if (mode_ == kChunked && remain_ == 0) {
+        if ((err_ = ReadChunkHeader()) != COCO_SUCCESS) {
+            return err_;
+        }
+        if (eof_) {
+            return ERROR_HTTP_BODY_EOF;
         }
     }
 
-    return "";
+    if (mode_ != kUntilEof) {
+        size = (size_t)std::min<int64_t>((int64_t)size, remain_);
+    }
+    ssize_t n = 0;
+    int ret = br_->Read(buf, size, &n);
+    if (ret != COCO_SUCCESS) {
+        if (mode_ == kUntilEof && ret == ERROR_SOCKET_READ && n == 0) {
+            eof_ = true;
+            return ERROR_HTTP_BODY_EOF;
+        }
+        err_ = ret;
+        return ret;
+    }
+
+    if (mode_ == kLength) {
+        remain_ -= n;
+        eof_ = remain_ == 0;
+    } else if (mode_ == kChunked) {
+        remain_ -= n;
+        chunk_crlf_ = remain_ == 0;
+    }
+    if (nread) {
+        *nread = n;
+    }
+    return COCO_SUCCESS;
 }
 
-bool HttpMessage::is_jsonp() { return jsonp; }
+int HttpBodyReader::ReadAll(std::string *body) {
+    if (mode_ == kLength) {
+        // A peer's Content-Length is not trusted for more than a modest reservation.
+        body->reserve(body->size() + (size_t)std::min<int64_t>(remain_, 1 << 20));
+    }
+    while (!eof_) {
+        size_t chunk = mode_ == kLength ? (size_t)std::min<int64_t>(remain_, 64 * 1024)
+                                        : (size_t)16 * 1024;
+        size_t old = body->size();
+        body->resize(old + chunk);
+        ssize_t n = 0;
+        int ret = Read(&(*body)[old], chunk, &n);
+        body->resize(old + (size_t)n);
+        if (ret == ERROR_HTTP_BODY_EOF) {
+            break;
+        }
+        if (ret != COCO_SUCCESS) {
+            return ret;
+        }
+    }
+    return COCO_SUCCESS;
+}
+
+int HttpBodyReader::Discard(int64_t limit) {
+    char buf[HTTP_READ_CACHE_BYTES];
+    int64_t total = 0;
+    while (!eof_) {
+        ssize_t n = 0;
+        int ret = Read(buf, sizeof(buf), &n);
+        if (ret == ERROR_HTTP_BODY_EOF) {
+            break;
+        }
+        if (ret != COCO_SUCCESS) {
+            return ret;
+        }
+        if ((total += n) > limit) {
+            return ERROR_HTTP_CONTENT_LENGTH;
+        }
+    }
+    return COCO_SUCCESS;
+}
+
+bool HttpBodyReader::DiscardBuffered() {
+    if (!eof_ && err_ == COCO_SUCCESS && mode_ == kLength && br_->Buffered() >= (size_t)remain_) {
+        br_->Consume((size_t)remain_);
+        remain_ = 0;
+        eof_ = true;
+    }
+    return eof_;
+}
+
+HttpRequest::HttpRequest(const std::string &method, const std::string &url,
+                         const std::string &body)
+    : method(method), url(url), send_body_(body) {}
+
+void HttpRequest::Reset() {
+    method.clear();
+    url.clear();
+    path.clear();
+    raw_query.clear();
+    header.Clear();
+    host.clear();
+    content_length = 0;
+    close = false;
+    upgrade_ = false;
+    query_parsed_ = false;
+    path_values_.clear();
+}
+
+const HttpValues &HttpRequest::Query() {
+    if (!query_parsed_) {
+        query_ = HttpValues::Parse(raw_query);
+        query_parsed_ = true;
+    }
+    return query_;
+}
+
+const std::string &HttpRequest::PathValue(const std::string &name) const {
+    for (auto &kv : path_values_) {
+        if (kv.first == name) {
+            return kv.second;
+        }
+    }
+    static const std::string kEmpty;
+    return kEmpty;
+}
+
+void HttpRequest::SetPathValue(const std::string &name, const std::string &value) {
+    for (auto &kv : path_values_) {
+        if (kv.first == name) {
+            kv.second = value;
+            return;
+        }
+    }
+    path_values_.push_back(std::make_pair(name, value));
+}
+
+// Finds the blank line that ends a header block starting at p; returns the block's length
+// including that line, or 0 when it is not complete yet. Scanning starts at from.
+static size_t FindHeaderEnd(const char *p, size_t n, size_t from) {
+    size_t i = from;
+    while (i < n) {
+        const char *lf = (const char *)memchr(p + i, '\n', n - i);
+        if (lf == nullptr) {
+            return 0;
+        }
+        size_t j = (size_t)(lf - p) + 1;
+        if (j < n && p[j] == '\n') {
+            return j + 1;
+        }
+        if (j + 1 < n && p[j] == '\r' && p[j + 1] == '\n') {
+            return j + 2;
+        }
+        i = j;
+    }
+    return 0;
+}
+
+static int ReadHeaderBlock(BufReader *br, size_t max_bytes, size_t *len) {
+    size_t from = 0;
+    while (true) {
+        // RFC 7230 3.5: ignore empty lines before the start line.
+        while (from == 0 && br->Buffered() > 0 && (br->Peek()[0] == '\r' || br->Peek()[0] == '\n')) {
+            br->Consume(1);
+        }
+        size_t n = br->Buffered();
+        if (n > 0) {
+            size_t end = FindHeaderEnd(br->Peek(), std::min(n, max_bytes), from);
+            if (end > 0) {
+                *len = end;
+                return COCO_SUCCESS;
+            }
+            from = n >= 3 ? n - 3 : 0;
+        }
+        if (n >= max_bytes) {
+            return ERROR_HTTP_HEADER_TOO_LARGE;
+        }
+        int ret = br->Fill(max_bytes);
+        if (ret == ERROR_READER_BUFFER_OVERFLOW) {
+            return ERROR_HTTP_HEADER_TOO_LARGE;
+        }
+        if (ret != COCO_SUCCESS) {
+            return ret;
+        }
+    }
+}
+
+// Runs http-parser over exactly one header block and collects what it reports.
+class HttpRequestParser {
+ public:
+    HttpHeader *header = nullptr;
+    std::string *url = nullptr;
+    std::string *reason = nullptr;
+    // 0 before any field, 1 inside a field name, 2 inside a value.
+    int field_state = 0;
+    bool complete = false;
+
+    unsigned method = 0;
+    unsigned status_code = 0;
+    unsigned short major = 1;
+    unsigned short minor = 1;
+    bool chunked = false;
+    bool has_length = false;
+    int64_t length = 0;
+    bool upgrade = false;
+    bool keep_alive = true;
+
+    int Parse(enum http_parser_type type, const char *p, size_t n) {
+        http_parser parser;
+        http_parser_init(&parser, type);
+        parser.data = this;
+        size_t parsed = http_parser_execute(&parser, Settings(), p, n);
+        enum http_errno err = HTTP_PARSER_ERRNO(&parser);
+        if (err == HPE_HEADER_OVERFLOW) {
+            return ERROR_HTTP_HEADER_TOO_LARGE;
+        }
+        if (err != HPE_OK || parsed != n || !complete) {
+            coco_warn("http: bad header, %s", http_errno_description(err));
+            return ERROR_HTTP_PARSE_HEADER;
+        }
+        return COCO_SUCCESS;
+    }
+
+    static int ParseRequest(BufReader *br, size_t max_header_bytes, HttpRequest *req);
+    static int ParseResponse(BufReader *br, size_t max_header_bytes, const std::string &method,
+                             HttpResponse *resp);
+
+ private:
+    static const http_parser_settings *Settings() {
+        static http_parser_settings s = MakeSettings();
+        return &s;
+    }
+
+    static http_parser_settings MakeSettings() {
+        http_parser_settings s;
+        memset(&s, 0, sizeof(s));
+        s.on_url = OnUrl;
+        s.on_status = OnStatus;
+        s.on_header_field = OnHeaderField;
+        s.on_header_value = OnHeaderValue;
+        s.on_headers_complete = OnHeadersComplete;
+        return s;
+    }
+
+    static int OnUrl(http_parser *p, const char *at, size_t len) {
+        HttpRequestParser *self = (HttpRequestParser *)p->data;
+        if (self->url) {
+            self->url->append(at, len);
+        }
+        return 0;
+    }
+
+    static int OnStatus(http_parser *p, const char *at, size_t len) {
+        HttpRequestParser *self = (HttpRequestParser *)p->data;
+        if (self->reason) {
+            self->reason->append(at, len);
+        }
+        return 0;
+    }
+
+    static int OnHeaderField(http_parser *p, const char *at, size_t len) {
+        HttpRequestParser *self = (HttpRequestParser *)p->data;
+        std::vector<HttpHeader::Field> &fields = self->header->fields_;
+        if (self->field_state != 1) {
+            fields.push_back(HttpHeader::Field());
+            self->field_state = 1;
+        }
+        fields.back().first.append(at, len);
+        return 0;
+    }
+
+    static int OnHeaderValue(http_parser *p, const char *at, size_t len) {
+        HttpRequestParser *self = (HttpRequestParser *)p->data;
+        self->header->fields_.back().second.append(at, len);
+        self->field_state = 2;
+        return 0;
+    }
+
+    static int OnHeadersComplete(http_parser *p) {
+        HttpRequestParser *self = (HttpRequestParser *)p->data;
+        self->complete = true;
+        self->method = p->method;
+        self->status_code = p->status_code;
+        self->major = p->http_major;
+        self->minor = p->http_minor;
+        self->chunked = (p->flags & F_CHUNKED) != 0;
+        self->has_length = (p->flags & F_CONTENTLENGTH) != 0 && p->content_length != ULLONG_MAX;
+        self->length = self->has_length ? (int64_t)p->content_length : 0;
+        self->upgrade = p->upgrade != 0;
+        self->keep_alive = http_should_keep_alive(p) != 0;
+        return 0;
+    }
+};
+
+int HttpRequestParser::ParseRequest(BufReader *br, size_t max_header_bytes, HttpRequest *req) {
+    size_t len = 0;
+    int ret = ReadHeaderBlock(br, max_header_bytes, &len);
+    if (ret != COCO_SUCCESS) {
+        return ret;
+    }
+
+    req->Reset();
+    HttpRequestParser hp;
+    hp.header = &req->header;
+    hp.url = &req->url;
+    ret = hp.Parse(HTTP_REQUEST, br->Peek(), len);
+    br->Consume(len);
+    if (ret != COCO_SUCCESS) {
+        return ret;
+    }
+
+    req->method = http_method_str((enum http_method)hp.method);
+    req->proto_major = hp.major;
+    req->proto_minor = hp.minor;
+    req->proto = "HTTP/" + std::to_string(hp.major) + "." + std::to_string(hp.minor);
+    req->close = !hp.keep_alive;
+    req->upgrade_ = hp.upgrade;
+    req->host = req->header.Get("Host");
+
+    const std::string &url = req->url;
+    if (!url.empty() && url[0] == '/') {
+        size_t q = url.find('?');
+        if (q != std::string::npos) {
+            req->raw_query.assign(url, q + 1, std::string::npos);
+        }
+        if (!HttpPathUnescape(url.substr(0, q), &req->path)) {
+            return ERROR_HTTP_PARSE_URI;
+        }
+    } else if (url == "*") {
+        req->path = url;
+    } else {
+        // absolute-form, or authority-form for CONNECT.
+        bool connect = hp.method == HTTP_CONNECT;
+        http_parser_url u;
+        http_parser_url_init(&u);
+        if (http_parser_parse_url(url.data(), url.size(), connect, &u) != 0) {
+            return ERROR_HTTP_PARSE_URI;
+        }
+        auto field = [&](http_parser_url_fields f) {
+            return (u.field_set & (1 << f)) ? url.substr(u.field_data[f].off, u.field_data[f].len)
+                                            : std::string();
+        };
+        req->host = connect ? url : field(UF_HOST);
+        req->raw_query = field(UF_QUERY);
+        if (!HttpPathUnescape(field(UF_PATH), &req->path)) {
+            return ERROR_HTTP_PARSE_URI;
+        }
+        if (req->path.empty() && !connect) {
+            req->path = "/";
+        }
+    }
+
+    if (hp.upgrade) {
+        req->content_length = 0;
+        req->body.Reset(br, HttpBodyReader::kNone);
+    } else if (hp.chunked) {
+        req->content_length = -1;
+        req->body.Reset(br, HttpBodyReader::kChunked);
+    } else {
+        req->content_length = hp.length;
+        req->body.Reset(br, hp.length > 0 ? HttpBodyReader::kLength : HttpBodyReader::kNone,
+                        hp.length);
+    }
+    return COCO_SUCCESS;
+}
+
+int HttpRequestParser::ParseResponse(BufReader *br, size_t max_header_bytes,
+                                     const std::string &method, HttpResponse *resp) {
+    size_t len = 0;
+    int ret = ReadHeaderBlock(br, max_header_bytes, &len);
+    if (ret != COCO_SUCCESS) {
+        return ret;
+    }
+
+    resp->header.Clear();
+    std::string reason;
+    HttpRequestParser hp;
+    hp.header = &resp->header;
+    hp.reason = &reason;
+    ret = hp.Parse(HTTP_RESPONSE, br->Peek(), len);
+    br->Consume(len);
+    if (ret != COCO_SUCCESS) {
+        return ret;
+    }
+
+    int code = (int)hp.status_code;
+    resp->status_code = code;
+    resp->status = std::to_string(code) + " " + reason;
+    resp->proto_major = hp.major;
+    resp->proto_minor = hp.minor;
+    resp->proto = "HTTP/" + std::to_string(hp.major) + "." + std::to_string(hp.minor);
+    resp->close = !hp.keep_alive;
+
+    if (method == "HEAD" || !HttpBodyAllowedForStatus(code)) {
+        resp->content_length = hp.has_length ? hp.length : 0;
+        resp->body.Reset(br, HttpBodyReader::kNone);
+    } else if (hp.chunked) {
+        resp->content_length = -1;
+        resp->body.Reset(br, HttpBodyReader::kChunked);
+    } else if (hp.has_length) {
+        resp->content_length = hp.length;
+        resp->body.Reset(br, HttpBodyReader::kLength, hp.length);
+    } else {
+        resp->content_length = -1;
+        resp->close = true;
+        resp->body.Reset(br, HttpBodyReader::kUntilEof);
+    }
+    return COCO_SUCCESS;
+}
+
+int ReadHttpRequest(BufReader *br, size_t max_header_bytes, HttpRequest *req) {
+    return HttpRequestParser::ParseRequest(br, max_header_bytes, req);
+}
+
+int ReadHttpResponse(BufReader *br, size_t max_header_bytes, const std::string &method,
+                     HttpResponse *resp) {
+    return HttpRequestParser::ParseResponse(br, max_header_bytes, method, resp);
+}

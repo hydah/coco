@@ -66,35 +66,40 @@ Each new connection calls the handler in its own coroutine and is freed automati
 ### HTTP / HTTPS server
 
 ```cpp
-class Hello : public IHttpHandler {
- public:
-    int serve_http(HttpResponseWriter *w, HttpMessage *r) override {
-        std::string body = "hello world";
-        w->header()->set_content_length((int)body.length());
-        w->header()->set_content_type("text/plain");
-        w->Write(const_cast<char *>(body.c_str()), (int)body.length());
-        return COCO_SUCCESS;
-    }
-};
-
 HttpServeMux mux;
-mux.handle("/", new Hello());
+// Go 1.22 ServeMux patterns: optional method, {name} segments, a {path...} tail, /static/ for a subtree
+mux.HandleFunc("GET /hello/{name}", [](HttpResponseWriter &w, HttpRequest &r) {
+    w.Write("hello " + r.PathValue("name"));   // small responses get Content-Length and go out in one write
+});
+mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
+    std::string body;
+    r.body.ReadAll(&body);
+    w.Header().Set("Content-Type", "application/json");
+    w.Write(body);
+});
 
-HttpServer server(true);   // true for HTTPS, reads server.key / server.crt from the working directory
-server.ListenAndServe("0.0.0.0", 9082, &mux);
+HttpServer server(&mux);
+server.ListenAndServe("0.0.0.0", 8080);
+// HTTPS: server.ListenAndServeTLS("0.0.0.0", 9082, "server.crt", "server.key");
 CocoLoopMs(1000);
 ```
 
-The client opens connections through an injected `StreamDialer`, plain TCP by default; pass `TlsDialer()` for HTTPS:
+The client is modeled after Go's `http.Client`: keep-alive connections are pooled per host and redirects are followed. HTTPS needs `TlsDialer()` injected:
 
 ```cpp
-HttpClient hc;
-hc.Initialize("127.0.0.1", 9082, HTTP_CLIENT_TIMEOUT_US, TlsDialer());
-HttpMessage *msg;
-if (hc.Get("/", "", &msg, "") == COCO_SUCCESS) {
+HttpClient client;
+client.SetTlsDialer(TlsDialer());   // not needed for http:// only
+
+std::unique_ptr<HttpResponse> resp;
+if (client.Get("https://127.0.0.1:9082/hello/coco", &resp) == COCO_SUCCESS) {
     std::string body;
-    msg->body_read_all(body);
+    resp->body.ReadAll(&body);   // the connection returns to the pool when resp is destroyed
 }
+
+HttpRequest req("PUT", "http://127.0.0.1:8080/items/1", "{\"n\":1}");
+req.header.Set("Content-Type", "application/json");
+client.Do(req, &resp);
+// A shared default client: HttpGet(url, &resp), HttpPost(url, type, body, &resp)
 ```
 
 ### WebSocket server and client
@@ -102,15 +107,15 @@ if (hc.Get("/", "", &msg, "") == COCO_SUCCESS) {
 ```cpp
 // Server: the handler is the connection's lifetime; CLOSE 1000 is sent when it returns
 HttpServeMux mux;
-mux.handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
+mux.Handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
     std::string data;
     WebSocketHeader::Type type;
     while (ws->ReadMessage(&data, &type) == COCO_SUCCESS) {
         ws->Send(data, type);
     }
 }));
-HttpServer server(false);  // true for wss
-server.ListenAndServe("0.0.0.0", 9083, &mux);
+HttpServer server(&mux);   // ListenAndServeTLS for wss
+server.ListenAndServe("0.0.0.0", 9083);
 ```
 
 ```cpp
@@ -194,12 +199,12 @@ src/
 ├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager
 ├── common/          error codes
 ├── log/             logging
-├── utils/           IoReader / IoWriter, FastBuffer, base64 / sha1 / md5
+├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
 ├── net/
 │   ├── layer4/      TCP, UDP
 │   ├── tls/         TlsConfig, TlsConn, TlsListener, TlsDialer
 │   └── layer7/
-│       ├── http/    message parsing, HttpServeMux, ServeHttpConn, HttpClient
+│       ├── http/    messages, HttpServeMux, ServeHttpConn, HttpClient
 │       └── ws/      frame codec, WebSocketConn, WebSocketClient, WebSocketHandler
 └── server/          TcpServer, HttpServer
 ```
@@ -235,7 +240,7 @@ The tests need no external framework. Each case runs as its own process with a 1
 
 - Single-threaded: ST runs on the thread that called `CocoInit()`; use multiple processes to use multiple cores.
 - TLS does not verify the peer certificate (`SSL_VERIFY_NONE`).
-- No HTTP/2 and no connection pool.
+- No HTTP/2.
 - A WebSocket message is capped at 4MB (`MAX_WS_PACKET`).
 
 ## License

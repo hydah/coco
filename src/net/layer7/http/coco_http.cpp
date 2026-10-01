@@ -1,224 +1,355 @@
 #include "net/layer7/http/coco_http.hpp"
 
-#include <assert.h>
-#include <netdb.h>
 #include <string.h>
-#include <algorithm>
+#include <strings.h>
+#include <sys/uio.h>
 
 #include "coco_api.h"
 #include "common/error.hpp"
 #include "log/log.hpp"
 #include "net/layer4/coco_tcp.hpp"
 
-static int ProcessRequest(HttpServeMux *mux, HttpResponseWriter *w, HttpMessage *r) {
-    int ret = COCO_SUCCESS;
-
-    coco_trace("HTTP %s %s, content-length=%lld", r->method_str().c_str(), r->url().c_str(),
-               (long long)r->content_length());
-
-    if ((ret = mux->serve_http(w, r)) != COCO_SUCCESS) {
-        if (!coco_is_client_gracefully_close(ret)) {
-            coco_error("serve http msg failed. ret=%d", ret);
-        }
-    }
-
-    return ret;
+// Answers a request that never reaches a handler, then the connection closes.
+static void WriteBareError(StreamConn &conn, int code, const char *detail = nullptr) {
+    std::string msg = detail ? detail : std::to_string(code) + " " + HttpStatusText(code);
+    std::string rsp = "HTTP/1.1 " + std::to_string(code) + " " + HttpStatusText(code) +
+                      "\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n"
+                      "Content-Length: " +
+                      std::to_string(msg.size()) + "\r\n\r\n" + msg;
+    conn.Write((void *)rsp.data(), rsp.size(), nullptr);
 }
 
-int ServeHttpConn(StreamConn &conn, HttpServeMux *mux) {
-    int ret = COCO_SUCCESS;
+class HttpServerConn {
+ public:
+    static int Serve(StreamConn &conn, HttpHandler *handler, const HttpServeOptions &opt);
+};
 
-    conn.SetRecvTimeout(HTTP_RECV_TIMEOUT_US);
+int HttpServerConn::Serve(StreamConn &conn, HttpHandler *handler, const HttpServeOptions &opt) {
+    conn.SetRecvTimeout(opt.read_timeout_us);
+    conn.SetSendTimeout(opt.write_timeout_us);
 
-    // process http messages.
+    // One reader, writer and request for the whole connection: buffers are reused, and
+    // bytes of a pipelined request read with the previous one are kept.
+    BufReader br(&conn);
+    HttpResponseWriter w(&conn, &br);
+    HttpRequest req;
+    std::string remote = conn.RemoteAddr();
+
     while (!CocoShouldStop()) {
-        std::unique_ptr<HttpMessage> msg(new HttpMessage());
-
-        // initialize parser
-        if ((ret = msg->Initialize(HTTP_REQUEST)) != COCO_SUCCESS) {
-            coco_error("api initialize http parser failed. ret=%d", ret);
+        int ret = ReadHttpRequest(&br, opt.max_header_bytes, &req);
+        if (ret == ERROR_HTTP_HEADER_TOO_LARGE) {
+            WriteBareError(conn, 431);
             return ret;
         }
-        // get a http message
-        if ((ret = msg->Parse(&conn, &conn)) != COCO_SUCCESS) {
+        if (ret == ERROR_HTTP_PARSE_HEADER || ret == ERROR_HTTP_PARSE_URI) {
+            WriteBareError(conn, 400);
             return ret;
         }
-
-        // ok, handle http request.
-        HttpResponseWriter writer(&conn);
-        if ((ret = ProcessRequest(mux, &writer, msg.get())) != COCO_SUCCESS) {
+        if (ret != COCO_SUCCESS) {
+            if (!coco_is_client_gracefully_close(ret) && ret != ERROR_THREAD_INTERRUPED) {
+                coco_warn("http: read request failed. ret=%d", ret);
+            }
             return ret;
         }
+        req.remote_addr = remote;
 
-        // Whether or not the handler switched protocols, what follows is not HTTP.
-        if (msg->is_upgrade()) {
-            break;
+        // RFC 7230 5.4.
+        if (req.ProtoAtLeast(1, 1) && !req.header.Has("Host")) {
+            WriteBareError(conn, 400, "400 Bad Request: missing required Host header");
+            return ERROR_HTTP_PARSE_HEADER;
         }
-
-        // read all rest bytes in request body. A request with neither Content-Length nor
-        // chunked encoding has no body; the reader would otherwise read until the peer closes.
-        char buf[HTTP_READ_CACHE_BYTES];
-        HttpResponseReader *br = msg->body_reader();
-        bool has_body = msg->is_chunked() || msg->content_length() > 0;
-        while (has_body && !br->eof()) {
-            if ((ret = br->Read(buf, HTTP_READ_CACHE_BYTES, nullptr)) != COCO_SUCCESS) {
-                return ret;
+        const std::string &expect = req.header.Get("Expect");
+        if (!expect.empty()) {
+            if (strcasecmp(expect.c_str(), "100-continue") != 0 || !req.ProtoAtLeast(1, 1)) {
+                WriteBareError(conn, 417);
+                return ERROR_HTTP_PARSE_HEADER;
+            }
+            if (!req.body.Eof()) {
+                req.body.SetContinue(&conn);
             }
         }
 
-        // donot keep alive, disconnect it.
-        if (!msg->is_keep_alive()) {
-            break;
+        w.Reset(&req);
+        handler->ServeHTTP(w, req);
+        if (w.Hijacked()) {
+            return COCO_SUCCESS;
+        }
+        if ((ret = w.Finish()) != COCO_SUCCESS) {
+            return ret;
+        }
+        if (w.ShouldClose()) {
+            return COCO_SUCCESS;
+        }
+        // The next request starts after this body.
+        if (!req.body.Eof() && req.body.Discard(opt.max_drain_bytes) != COCO_SUCCESS) {
+            return COCO_SUCCESS;
         }
     }
-
-    return ret;
+    return COCO_SUCCESS;
 }
 
-HttpClient::~HttpClient() {
-    Disconnect();
-    coco_freep(http_msg_);
+int ServeHttpConn(StreamConn &conn, HttpHandler *handler, const HttpServeOptions &options) {
+    return HttpServerConn::Serve(conn, handler, options);
 }
 
-int HttpClient::Initialize(const std::string &host, int port, int64_t t_us,
-                           StreamDialer dialer) {
-    int ret = COCO_SUCCESS;
+std::unique_ptr<HttpClientConn> HttpConnPool::Get(const std::string &key) {
+    auto it = idle_.find(key);
+    if (it == idle_.end() || it->second.empty()) {
+        return nullptr;
+    }
+    std::unique_ptr<HttpClientConn> c = std::move(it->second.back());
+    it->second.pop_back();
+    return c;
+}
 
-    coco_freep(http_msg_);
-    http_msg_ = new HttpMessage();
-    if ((ret = http_msg_->Initialize(HTTP_RESPONSE)) != COCO_SUCCESS) {
-        coco_error("initialize parser failed. ret=%d", ret);
+void HttpConnPool::Put(std::unique_ptr<HttpClientConn> c) {
+    std::vector<std::unique_ptr<HttpClientConn>> &list = idle_[c->key];
+    if (list.size() < max_idle_per_host) {
+        list.push_back(std::move(c));
+    }
+}
+
+HttpResponse::HttpResponse() = default;
+
+HttpResponse::~HttpResponse() {
+    if (!conn_ || close || status_code == 101 || !body.DiscardBuffered()) {
+        return;
+    }
+    std::shared_ptr<HttpConnPool> pool = pool_.lock();
+    if (pool) {
+        pool->Put(std::move(conn_));
+    }
+}
+
+StreamConn *HttpResponse::Conn() { return conn_ ? conn_->conn.get() : nullptr; }
+
+BufReader *HttpResponse::Reader() { return conn_ ? &conn_->br : nullptr; }
+
+void HttpResponse::Close() { conn_.reset(); }
+
+struct HttpUrl {
+    bool tls = false;
+    std::string host;
+    int port = 80;
+    // path and query, as sent on the request line.
+    std::string request_uri;
+    // host, with brackets for IPv6 and the port when it is not the default.
+    std::string host_header;
+    // "scheme://host:port", what pooled connections are keyed by.
+    std::string key;
+};
+
+static int ParseClientUrl(const std::string &url, HttpUrl *u) {
+    http_parser_url pu;
+    http_parser_url_init(&pu);
+    if (http_parser_parse_url(url.data(), url.size(), 0, &pu) != 0) {
+        coco_error("http: bad url %s", url.c_str());
+        return ERROR_HTTP_PARSE_URI;
+    }
+    auto field = [&](http_parser_url_fields f) {
+        return (pu.field_set & (1 << f)) ? url.substr(pu.field_data[f].off, pu.field_data[f].len)
+                                         : std::string();
+    };
+    std::string scheme = field(UF_SCHEMA);
+    u->tls = strcasecmp(scheme.c_str(), "https") == 0;
+    u->host = field(UF_HOST);
+    if ((!u->tls && strcasecmp(scheme.c_str(), "http") != 0) || u->host.empty()) {
+        coco_error("http: url must be http://host or https://host, got %s", url.c_str());
+        return ERROR_HTTP_PARSE_URI;
+    }
+    int def = u->tls ? 443 : 80;
+    u->port = pu.port != 0 ? pu.port : def;
+    u->request_uri = field(UF_PATH);
+    if (u->request_uri.empty()) {
+        u->request_uri = "/";
+    }
+    if (pu.field_set & (1 << UF_QUERY)) {
+        u->request_uri += "?" + field(UF_QUERY);
+    }
+    // RFC 7230 5.4: an IPv6 literal goes in brackets, and a non-default port is included.
+    u->host_header = u->host.find(':') != std::string::npos ? "[" + u->host + "]" : u->host;
+    if (u->port != def) {
+        u->host_header += ":" + std::to_string(u->port);
+    }
+    u->key = (u->tls ? "https://" : "http://") + u->host + ":" + std::to_string(u->port);
+    return COCO_SUCCESS;
+}
+
+// Resolves a Location header against the URL that answered with it.
+static std::string ResolveLocation(const HttpUrl &base, const std::string &loc) {
+    if (loc.find("://") != std::string::npos) {
+        return loc;
+    }
+    std::string scheme = base.tls ? "https:" : "http:";
+    if (loc.compare(0, 2, "//") == 0) {
+        return scheme + loc;
+    }
+    std::string origin = scheme + "//" + base.host_header;
+    if (!loc.empty() && loc[0] == '/') {
+        return origin + loc;
+    }
+    std::string path = base.request_uri.substr(0, base.request_uri.find('?'));
+    return origin + path.substr(0, path.rfind('/') + 1) + loc;
+}
+
+HttpClient::HttpClient(int64_t timeout_us)
+    : timeout_us(timeout_us), dialer_(TcpDialer()), pool_(std::make_shared<HttpConnPool>()) {}
+
+HttpClient::~HttpClient() { pool_->Clear(); }
+
+int HttpClient::Get(const std::string &url, std::unique_ptr<HttpResponse> *resp) {
+    HttpRequest req("GET", url);
+    return Do(req, resp);
+}
+
+int HttpClient::Post(const std::string &url, const std::string &content_type,
+                     const std::string &body, std::unique_ptr<HttpResponse> *resp) {
+    HttpRequest req("POST", url, body);
+    req.header.Set("Content-Type", content_type);
+    return Do(req, resp);
+}
+
+int HttpClient::Do(HttpRequest &req, std::unique_ptr<HttpResponse> *resp) {
+    resp->reset();
+    HttpUrl u;
+    int ret = ParseClientUrl(req.url, &u);
+    if (ret != COCO_SUCCESS) {
         return ret;
     }
+    pool_->max_idle_per_host = max_idle_conns_per_host;
 
-    host_ = host;
-    port_ = port;
-    timeout_us_ = t_us;
-    dialer_ = dialer ? dialer : TcpDialer();
-    method_ = "GET";
+    HttpRequest *cur = &req;
+    std::unique_ptr<HttpRequest> redirected;
+    for (int redirects = 0;; ++redirects) {
+        if ((ret = RoundTrip(*cur, u, resp)) != COCO_SUCCESS) {
+            return ret;
+        }
+        int code = (*resp)->status_code;
+        const std::string &loc = (*resp)->header.Get("Location");
+        bool redirect = code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+        if (!redirect || max_redirects <= 0 || loc.empty()) {
+            return COCO_SUCCESS;
+        }
+        if (redirects >= max_redirects) {
+            coco_warn("http: stopped after %d redirects", redirects);
+            return ERROR_HTTP_TOO_MANY_REDIRECTS;
+        }
 
-    return ret;
+        std::string target = ResolveLocation(u, loc);
+        HttpUrl next;
+        if (ParseClientUrl(target, &next) != COCO_SUCCESS) {
+            return COCO_SUCCESS;
+        }
+        std::unique_ptr<HttpRequest> r(new HttpRequest(cur->method, target, cur->SendBody()));
+        r->header = cur->header;
+        r->close = cur->close;
+        // Like browsers and Go: 301/302/303 turn into a GET without a body.
+        if (code <= 303 && cur->method != "GET" && cur->method != "HEAD") {
+            r->method = "GET";
+            r->SetBody("");
+            r->header.Del("Content-Type");
+            r->header.Del("Content-Length");
+        }
+        if (next.host != u.host) {
+            r->header.Del("Authorization");
+            r->header.Del("Cookie");
+            r->header.Del("WWW-Authenticate");
+        }
+        // Frees the old response; its connection goes back to the pool if possible.
+        resp->reset();
+        redirected = std::move(r);
+        cur = redirected.get();
+        u = next;
+    }
 }
 
-bool HttpClient::SetMethod(std::string method) {
-    method_ = method;
-    return true;
-}
-bool HttpClient::SetHeader(std::string key, std::string value) {
-    http_header_.set(key, value);
-    return true;
-}
-
-int HttpClient::SendRequest() {
-    int ret = COCO_SUCCESS;
-
-    if ((ret = Connect()) != COCO_SUCCESS) {
-        coco_warn("http %s. connect server failed. [host:%s, port:%d]ret=%d", method_.c_str(),
-                  host_.c_str(), port_, ret);
-        return ret;
+int HttpClient::RoundTrip(HttpRequest &req, const HttpUrl &u, std::unique_ptr<HttpResponse> *out) {
+    const StreamDialer &dial = u.tls ? tls_dialer_ : dialer_;
+    if (!dial) {
+        coco_error("http: %s needs SetTlsDialer()", req.url.c_str());
+        return ERROR_HTTPS_NOT_SUPPORTED;
     }
 
-    std::stringstream ss;
-    ss << method_ << " " << path_ << " "
-       << "HTTP/1.1" << HTTP_CRLF << http_header_.Encode() << HTTP_CRLF;
-    if (!req_.empty()) {
-        ss << req_;
+    const std::string &body = req.SendBody();
+    const HttpHeader &h = req.header;
+    std::string head;
+    head.reserve(256);
+    head.append(req.method).append(" ", 1).append(u.request_uri).append(" HTTP/1.1\r\n", 11);
+    if (!h.Has("Host")) {
+        head.append("Host: ").append(req.host.empty() ? u.host_header : req.host).append(HTTP_CRLF);
     }
-
-    std::string data = ss.str();
-    if ((ret = conn_->Write((void *)data.c_str(), data.length(), nullptr)) != COCO_SUCCESS) {
-        // disconnect when error.
-        Disconnect();
-        coco_error("write http get failed. ret=%d", ret);
-        return ret;
+    if (!h.Has("User-Agent")) {
+        head.append("User-Agent: coco\r\n");
     }
-
-    if ((ret = http_msg_->Parse(conn_, nullptr)) != COCO_SUCCESS) {
-        coco_error("http post. parse response failed. ret=%d", ret);
-        return ret;
+    bool wants_length = !body.empty() || req.method == "POST" || req.method == "PUT" ||
+                        req.method == "PATCH";
+    if (wants_length && !h.Has("Content-Length") && !h.Has("Transfer-Encoding")) {
+        head.append("Content-Length: ").append(std::to_string(body.size())).append(HTTP_CRLF);
     }
-
-    return ret;
-}
-
-int HttpClient::Post(std::string path, std::string req, HttpMessage **ppmsg,
-                     std::string request_id) {
-    int ret = COCO_SUCCESS;
-
-    method_ = "POST";
-    path_ = path;
-    req_ = req;
-    *ppmsg = nullptr;
-
-    SetHeader("Host", host_);
-    SetHeader("Request-Id", request_id);
-    SetHeader("Connection", "Keep-Alive");
-    SetHeader("Content-Length", std::to_string(req.length()));
-    SetHeader("User-Agent", "coco");
-    SetHeader("Content-Type", "application/json");
-
-    if ((ret = SendRequest()) != COCO_SUCCESS) {
-        return ret;
+    if (req.close && !h.Has("Connection")) {
+        head.append("Connection: close\r\n");
     }
+    h.WriteTo(&head);
+    head.append(HTTP_CRLF);
 
-    coco_info("http post. parse response success.");
-    *ppmsg = http_msg_;
-    return ret;
-}
+    // Go's rule: only these may be sent twice without the caller knowing.
+    bool replayable = req.method == "GET" || req.method == "HEAD" || req.method == "OPTIONS" ||
+                      req.method == "TRACE";
+    for (int attempt = 0;; ++attempt) {
+        std::unique_ptr<HttpClientConn> c = pool_->Get(u.key);
+        bool reused = c != nullptr;
+        int ret;
+        if (!reused) {
+            std::unique_ptr<StreamConn> conn;
+            if ((ret = dial(u.host, u.port, timeout_us, &conn)) != COCO_SUCCESS) {
+                coco_warn("http: dial %s:%d failed. ret=%d", u.host.c_str(), u.port, ret);
+                return ret;
+            }
+            c.reset(new HttpClientConn(u.key, std::move(conn)));
+        }
+        c->conn->SetTimeout(timeout_us);
 
-int HttpClient::Get(std::string path, std::string req, HttpMessage **ppmsg,
-                    std::string request_id) {
-    int ret = COCO_SUCCESS;
+        iovec iov[2] = {{(void *)head.data(), head.size()}, {(void *)body.data(), body.size()}};
+        bool wrote = (ret = c->conn->Writev(iov, body.empty() ? 1 : 2, nullptr)) == COCO_SUCCESS;
 
-    method_ = "GET";
-    path_ = path;
-    req_ = req;
-    *ppmsg = nullptr;
+        std::unique_ptr<HttpResponse> resp(new HttpResponse());
+        while (ret == COCO_SUCCESS) {
+            ret = ReadHttpResponse(&c->br, max_header_bytes, req.method, resp.get());
+            // 1xx before the final response, e.g. 100 Continue, are skipped.
+            if (ret != COCO_SUCCESS || resp->status_code < 100 || resp->status_code > 199 ||
+                resp->status_code == 101) {
+                break;
+            }
+        }
+        if (ret != COCO_SUCCESS) {
+            // A pooled connection may have been closed by the server while idle.
+            bool stale = reused && attempt == 0 &&
+                         (!wrote || (replayable && (ret == ERROR_SOCKET_READ ||
+                                                    ret == ERROR_SOCKET_WRITE)));
+            if (stale) {
+                continue;
+            }
+            return ret;
+        }
 
-    SetHeader("Host", host_);
-    SetHeader("Request-Id", request_id);
-    SetHeader("Connection", "Keep-Alive");
-    SetHeader("Content-Length", std::to_string(req.length()));
-    SetHeader("User-Agent", "coco");
-    SetHeader("Content-Type", "application/json");
-
-    if ((ret = SendRequest()) != COCO_SUCCESS) {
-        return ret;
+        resp->conn_ = std::move(c);
+        resp->pool_ = pool_;
+        *out = std::move(resp);
+        return COCO_SUCCESS;
     }
-
-    coco_info("parse http get response success.");
-    *ppmsg = http_msg_;
-
-    return ret;
 }
 
-void HttpClient::Disconnect() {
-    connected_ = false;
-    coco_freep(conn_);
+HttpClient &HttpDefaultClient() {
+    // Never destroyed: responses and coroutines may still use it during exit.
+    static HttpClient *client = new HttpClient();
+    return *client;
 }
 
-int HttpClient::Connect() {
-    int ret = COCO_SUCCESS;
-
-    if (connected_) {
-        return ret;
-    }
-
-    Disconnect();
-
-    std::unique_ptr<StreamConn> conn;
-    if ((ret = dialer_(host_, port_, timeout_us_, &conn)) != COCO_SUCCESS) {
-        coco_warn("http client failed, server=%s, port=%d, timeout=%lld, ret=%d", host_.c_str(),
-                  port_, (long long)timeout_us_, ret);
-        return ret;
-    }
-    coco_info("connect to server success. server=%s, port=%d", host_.c_str(), port_);
-    conn->SetTimeout(timeout_us_);
-    conn_ = conn.release();
-
-    connected_ = true;
-
-    return ret;
+int HttpGet(const std::string &url, std::unique_ptr<HttpResponse> *resp) {
+    return HttpDefaultClient().Get(url, resp);
 }
 
-StreamConn *HttpClient::GetUnderlayerConn() { return conn_; }
+int HttpPost(const std::string &url, const std::string &content_type, const std::string &body,
+             std::unique_ptr<HttpResponse> *resp) {
+    return HttpDefaultClient().Post(url, content_type, body, resp);
+}

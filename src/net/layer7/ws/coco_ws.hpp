@@ -7,7 +7,6 @@
 #include "base/coroutine.hpp"
 #include "base/coroutine_mgr.hpp"
 #include "net/layer7/http/coco_http.hpp"
-#include "net/layer7/http/http_io.h"
 #include "net/layer7/http/http_mux.h"
 #include "net/layer7/ws/ws_frame.hpp"
 #include "utils/utils.hpp"
@@ -24,9 +23,10 @@ typedef std::function<int(WebSocketConn *, std::unique_ptr<WebSocektMessage> msg
 // returns ERROR_WS_CLOSED.
 class WebSocketConn {
  public:
-    // conn and reader are not owned; reader yields the bytes that follow the handshake.
-    // A client masks what it sends, a server requires what it receives to be masked.
-    WebSocketConn(StreamConn *conn, HttpResponseReader *reader, bool is_client);
+    // conn and reader are not owned; reader yields the bytes that follow the handshake,
+    // including any that arrived with it. A client masks what it sends, a server requires
+    // what it receives to be masked.
+    WebSocketConn(StreamConn *conn, IoReader *reader, bool is_client);
     // Must not run while a ReadMessage() or Send() does.
     virtual ~WebSocketConn();
 
@@ -60,7 +60,7 @@ class WebSocketConn {
     void Finish();
 
     StreamConn *conn_;
-    HttpResponseReader *reader_;
+    IoReader *reader_;
     bool is_client_;
     WebSocketFrameDecoder decoder_;
     // decoded data messages not read yet.
@@ -139,8 +139,8 @@ class WebSocketClient {
     ConnManager *manager_;
     StreamDialer tls_dialer_;
 
-    // Owns the socket and the upgrade response the connection reads through.
-    HttpClient *http_client_ = nullptr;
+    // The 101 response: owns the socket and the buffer the connection reads through.
+    std::unique_ptr<HttpResponse> upgrade_;
     WebSocketConn *conn_ = nullptr;
     // Deletes itself when its coroutine exits.
     Reader *reader_ = nullptr;
@@ -155,21 +155,21 @@ class WebSocketClient {
 // (with CLOSE 1000 if still open) and the conn is freed, so other coroutines may Send()
 // on it only until then.
 //
-//   mux.handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
+//   mux.Handle("/echo", new WebSocketHandler([](WebSocketConn *ws) {
 //       std::string data;
 //       WebSocketHeader::Type type;
 //       while (ws->ReadMessage(&data, &type) == COCO_SUCCESS) {
 //           ws->Send(data, type);
 //       }
 //   }));
-class WebSocketHandler : public IHttpHandler {
+class WebSocketHandler : public HttpHandler {
  public:
     typedef std::function<void(WebSocketConn *)> ServeFunc;
 
     explicit WebSocketHandler(ServeFunc serve) : serve_(serve) {}
     virtual ~WebSocketHandler() = default;
 
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+    void ServeHTTP(HttpResponseWriter &w, HttpRequest &r) override;
 
  private:
     ServeFunc serve_;

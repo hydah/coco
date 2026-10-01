@@ -30,7 +30,7 @@ static std::string WebSocketAccept(const std::string &key) {
     return base64::Encode(sha, sizeof(sha));
 }
 
-WebSocketConn::WebSocketConn(StreamConn *conn, HttpResponseReader *reader, bool is_client)
+WebSocketConn::WebSocketConn(StreamConn *conn, IoReader *reader, bool is_client)
     : conn_(conn),
       reader_(reader),
       is_client_(is_client),
@@ -75,7 +75,7 @@ int WebSocketConn::ReadFrames() {
     }
 
     char buf[HTTP_READ_CACHE_BYTES];
-    int nb_read = 0;
+    ssize_t nb_read = 0;
     int ret = reader_->Read(buf, HTTP_READ_CACHE_BYTES, &nb_read);
     if (ret != COCO_SUCCESS) {
         if (!coco_is_client_gracefully_close(ret)) {
@@ -204,7 +204,7 @@ class WebSocketClient::Reader : public ConnRoutine {
  protected:
     virtual int DoCycle() {
         int ret = client_->conn_->Serve(client_->message_handler_);
-        client_->http_client_->Disconnect();
+        client_->upgrade_->Close();
         return ret;
     }
 
@@ -229,7 +229,7 @@ WebSocketClient::~WebSocketClient() {
         manager_ = nullptr;
     }
     coco_freep(conn_);
-    coco_freep(http_client_);
+    upgrade_.reset();
 }
 
 int WebSocketClient::Dial(const std::string &url, uint64_t timeout_us) {
@@ -286,14 +286,14 @@ int WebSocketClient::Start(bool is_wss, const std::string &host, uint16_t port, 
     if ((ret = reader_->Start()) != COCO_SUCCESS) {
         delete reader_;
         conn_->closed_ = true;
-        http_client_->Disconnect();
+        upgrade_->Close();
     }
     return ret;
 }
 
 int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t port,
                                const std::string &path, uint64_t timeout_us) {
-    if (http_client_ != nullptr) {
+    if (upgrade_ != nullptr) {
         coco_error("websocket client already started");
         return ERROR_THREAD_STARTED;
     }
@@ -301,51 +301,36 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
         coco_error("websocket: wss needs SetTlsDialer()");
         return ERROR_HTTPS_NOT_SUPPORTED;
     }
-    http_client_ = new HttpClient();
 
-    auto ret = http_client_->Initialize(host, port, timeout_us, is_wss ? tls_dialer_ : nullptr);
+    HttpClient client((int64_t)timeout_us);
+    client.SetTlsDialer(tls_dialer_);
+    client.max_redirects = 0;
+
+    std::string host_part = host.find(':') != std::string::npos ? "[" + host + "]" : host;
+    HttpRequest req("GET", std::string(is_wss ? "https://" : "http://") + host_part + ":" +
+                               std::to_string(port) + path);
+    sec_websocket_key_ = NewWebSocketKey();
+    req.header.Set("Upgrade", "websocket");
+    req.header.Set("Connection", "Upgrade");
+    req.header.Set("Sec-WebSocket-Version", "13");
+    req.header.Set("Sec-WebSocket-Key", sec_websocket_key_);
+
+    std::unique_ptr<HttpResponse> resp;
+    int ret = client.Do(req, &resp);
     if (ret != COCO_SUCCESS) {
         return ret;
     }
-    sec_websocket_key_ = NewWebSocketKey();
-    http_client_->SetMethod("GET");
-    http_client_->SetPath(path);
-
-    // RFC 7230 5.4: an IPv6 literal goes in brackets, and a non-default port is included.
-    std::string host_header = host.find(':') != std::string::npos ? "[" + host + "]" : host;
-    if (port != (is_wss ? 443 : 80)) {
-        host_header += ":" + std::to_string(port);
+    if (resp->status_code != 101) {
+        coco_error("websocket: handshake answered %s", resp->status.c_str());
+        return ERROR_HTTP_STATUS_INVALID;
     }
-    http_client_->SetHeader("Host", host_header);
-    http_client_->SetHeader("User-Agent", "coco");
-    http_client_->SetHeader("Upgrade", "websocket");
-    http_client_->SetHeader("Connection", "Upgrade");
-    http_client_->SetHeader("Sec-WebSocket-Version", "13");
-    http_client_->SetHeader("Sec-WebSocket-Key", sec_websocket_key_);
-
-    if ((ret = http_client_->SendRequest()) != COCO_SUCCESS) {
-        return ret;
+    if (WebSocketAccept(sec_websocket_key_) != resp->header.Get("Sec-WebSocket-Accept")) {
+        coco_error("websocket: Sec-WebSocket-Accept does not match the key");
+        return ERROR_HTTP_STATUS_INVALID;
     }
 
-    HttpMessage *ws_http_msg = http_client_->GetHttpMessage();
-    if (ws_http_msg == nullptr) {
-        coco_error("http msg is nullptr");
-        return -1;
-    }
-
-    if (ws_http_msg->status_code() != 101) {
-        coco_error("protocol not swich");
-        return -2;
-    }
-
-    if (WebSocketAccept(sec_websocket_key_) !=
-        ws_http_msg->get_request_header("Sec-WebSocket-Accept")) {
-        // close
-        coco_error("Sec-WebSocket-Accept not equal");
-        return -3;
-    }
-
-    conn_ = new WebSocketConn(http_client_->GetUnderlayerConn(), ws_http_msg->body_reader(), true);
+    upgrade_ = std::move(resp);
+    conn_ = new WebSocketConn(upgrade_->Conn(), upgrade_->Reader(), true);
     return COCO_SUCCESS;
 }
 
@@ -366,41 +351,37 @@ int WebSocketClient::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_
     return conn_->Send(buf, (size_t)len, data_type);
 }
 
-static bool HeaderIs(HttpMessage *r, const char *name, const char *value) {
-    return strcasecmp(r->get_request_header(name).c_str(), value) == 0;
-}
-
-int WebSocketHandler::serve_http(HttpResponseWriter *w, HttpMessage *r) {
-    // RFC 6455 4.2.1. is_upgrade() covers the Connection: upgrade token.
-    std::string key = r->get_request_header("Sec-WebSocket-Key");
-    if (!r->is_http_get() || !r->is_upgrade() || r->is_chunked() ||
-        !HeaderIs(r, "Upgrade", "websocket") || base64::decode(key).size() != 16) {
-        return go_http_error(w, CONSTS_HTTP_BadRequest);
+void WebSocketHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
+    // RFC 6455 4.2.1. IsUpgrade() covers the Connection: upgrade token.
+    const std::string &key = r.header.Get("Sec-WebSocket-Key");
+    if (r.method != "GET" || !r.IsUpgrade() || !r.header.HasToken("Upgrade", "websocket") ||
+        base64::decode(key).size() != 16) {
+        HttpError(w, HttpStatusText(400), 400);
+        return;
     }
-    if (r->get_request_header("Sec-WebSocket-Version") != "13") {
-        w->header()->set("Sec-WebSocket-Version", "13");
-        return go_http_error(w, CONSTS_HTTP_BadRequest);
+    if (r.header.Get("Sec-WebSocket-Version") != "13") {
+        w.Header().Set("Sec-WebSocket-Version", "13");
+        HttpError(w, HttpStatusText(400), 400);
+        return;
     }
 
-    StreamConn *conn = static_cast<StreamConn *>(r->GetObserver());
+    StreamConn *conn = nullptr;
+    BufReader *br = nullptr;
+    if (w.Hijack(&conn, &br) != COCO_SUCCESS) {
+        return;
+    }
     std::string rsp =
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: " +
         WebSocketAccept(key) + "\r\n\r\n";
-    int ret = conn->Write((void *)rsp.data(), rsp.size(), nullptr);
-    if (ret != COCO_SUCCESS) {
-        return ret;
+    if (conn->Write((void *)rsp.data(), rsp.size(), nullptr) != COCO_SUCCESS) {
+        return;
     }
 
-    // The frames follow the header, so the reader must not stop at a declared body length.
-    r->set_content_length(-1);
-    // A copy, in case the handler is removed from the mux while the session runs.
-    ServeFunc serve = serve_;
-    WebSocketConn ws(conn, r->body_reader(), false);
-    serve(&ws);
+    WebSocketConn ws(conn, br, false);
+    serve_(&ws);
     // Read errors were logged, and the connection ends here either way.
     ws.Finish();
-    return COCO_SUCCESS;
 }

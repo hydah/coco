@@ -6,6 +6,7 @@ add_executable(coco_tests
     ws_test.cpp
     ws_server_test.cpp
     tls_test.cpp
+    http_test.cpp
 )
 target_include_directories(coco_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(coco_tests PRIVATE COCO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
@@ -68,6 +69,23 @@ set(COCO_TEST_CASES
     TlsDialerOverAnyDialer
     TlsHandshakesOnFirstUse
     TlsSilentPeerDoesNotBlockAccept
+    HttpSmallResponseHasContentLength
+    HttpLargeResponseIsChunked
+    HttpPipelinedRequests
+    HttpRequestBodies
+    HttpExpectContinue
+    HttpHeadRequest
+    HttpBadRequests
+    HttpOneZero
+    HttpMuxRouting
+    HttpMuxMethodNotAllowed
+    HttpRequestFields
+    HttpClientReusesConnection
+    HttpClientRetriesStaleConnection
+    HttpClientFollowsRedirects
+    HttpClientResponseFraming
+    HttpClientRejectsBadUrls
+    HttpHelpers
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

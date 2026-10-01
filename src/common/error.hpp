@@ -65,8 +65,6 @@
 #define ERROR_THREAD_INTERRUPED 1070
 #define ERROR_THREAD_TERMINATED 1071
 #define ERROR_THREAD_DISPOSED 1069
-#define ERROR_THREAD_INTERRUPED 1070
-#define ERROR_THREAD_TERMINATED 1071
 #define ERROR_THREAD_DUMMY 1072
 #define ERROR_ASPROCESS_PPID 1073
 #define ERROR_EXCEED_CONNECTIONS 1074
@@ -96,6 +94,15 @@
 #define ERROR_HTTP_RESPONSE_EOF 4025
 #define ERROR_HTTP_INVALID_CHUNK_HEADER 4026
 #define ERROR_HTTP_REQUEST_EOF 4029
+// the whole message body has been read.
+#define ERROR_HTTP_BODY_EOF 4030
+// the header block is larger than the configured limit.
+#define ERROR_HTTP_HEADER_TOO_LARGE 4031
+// the response writer's connection was taken over with Hijack.
+#define ERROR_HTTP_HIJACKED 4032
+// a body was written for a status that does not allow one, e.g. 204 or 304.
+#define ERROR_HTTP_BODY_NOT_ALLOWED 4033
+#define ERROR_HTTP_TOO_MANY_REDIRECTS 4034
 #define ERROR_HTTPS_NOT_SUPPORTED           4041
 #define ERROR_HTTPS_HANDSHAKE               4042
 #define ERROR_HTTPS_READ                    4043

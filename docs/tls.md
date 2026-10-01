@@ -186,8 +186,8 @@ TcpServer::Acceptor::Cycle
       Session::DoCycle
         SetRecvTimeout             经 TlsConn 设到 TcpConn
         handler = ServeHttpConn    TcpServer 的处理函数，只看到明文 StreamConn
-          HttpMessage::Parse(conn) 第一次 TlsConn::Read 先握手，之后得到明文 HTTP
-          mux 写响应               TlsConn::Write
+          ReadHttpRequest(br)      第一次 TlsConn::Read 先握手，之后得到明文 HTTP
+          handler 写响应           TlsConn::Write
       Cycle 返回
       delete Session               仍在这条协程上：TlsConn 析构，TcpConn 关闭 st_netfd
         ConnManager::Remove        从存活名单里移除

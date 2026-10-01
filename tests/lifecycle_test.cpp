@@ -17,13 +17,9 @@ namespace {
 const char *kLoopback = "127.0.0.1";
 const int kConnectTimeoutUs = 1000 * 1000;
 
-class OkHandler : public IHttpHandler {
+class OkHandler : public HttpHandler {
  public:
-    int serve_http(HttpResponseWriter *w, HttpMessage *r) override {
-        std::string body = "ok";
-        w->header()->set_content_length((int)body.size());
-        return w->Write(const_cast<char *>(body.data()), (int)body.size());
-    }
+    void ServeHTTP(HttpResponseWriter &w, HttpRequest &r) override { w.Write("ok"); }
 };
 
 // Reads from c until the accumulated data contains marker or the read fails.
@@ -59,10 +55,10 @@ bool PeerClosed(TcpConn *c) {
 COTEST(HttpServerDeletedWhileAccepting) {
     const int port = 19181;
     HttpServeMux mux;
-    mux.handle("/", new OkHandler());
+    mux.Handle("/", new OkHandler());
 
-    HttpServer *server = new HttpServer(false);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
+    HttpServer *server = new HttpServer(&mux);
+    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
     CocoSleepMs(5);
 
     delete server;
@@ -76,10 +72,10 @@ COTEST(HttpServerDeletedWhileAccepting) {
 COTEST(HttpServerDeletedWithOpenKeepAliveConn) {
     const int port = 19182;
     HttpServeMux mux;
-    mux.handle("/", new OkHandler());
+    mux.Handle("/", new OkHandler());
 
-    HttpServer *server = new HttpServer(false);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
+    HttpServer *server = new HttpServer(&mux);
+    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
 
     std::unique_ptr<TcpConn> client;
     DialTcp(kLoopback, port, kConnectTimeoutUs, &client);
@@ -102,10 +98,10 @@ COTEST(HttpServerDeletedWithOpenKeepAliveConn) {
 COTEST(HttpServerClosesNonKeepAliveConn) {
     const int port = 19183;
     HttpServeMux mux;
-    mux.handle("/", new OkHandler());
+    mux.Handle("/", new OkHandler());
 
-    HttpServer *server = new HttpServer(false);
-    CHECK_EQ(server->ListenAndServe(kLoopback, port, &mux), 0);
+    HttpServer *server = new HttpServer(&mux);
+    CHECK_EQ(server->ListenAndServe(kLoopback, port), 0);
 
     std::unique_ptr<TcpConn> client;
     DialTcp(kLoopback, port, kConnectTimeoutUs, &client);

@@ -1,139 +1,79 @@
 #pragma once
+#include <functional>
 #include <map>
-#include <sstream>
+#include <memory>
+#include <string>
+#include <vector>
 
-#include "http-parser/http_parser.h"
+#include "net/layer7/http/http_message.h"
+#include "net/layer7/http/http_writer.h"
 
-#include "net/layer7/http/http_basic.h"
-#include "utils/utils.hpp"
-
-class HttpMuxEntry;
-class HttpResponseWriter;
-class HttpMessage;
-// Objects implementing the Handler interface can be
-// registered to serve a particular path or subtree
-// in the HTTP server.
-//
-// ServeHTTP should write reply headers and data to the ResponseWriter
-// and then return.  Returning signals that the request is finished
-// and that the HTTP server can move on to the next request on
-// the connection.
-class IHttpHandler {
+// Serves one request, like Go's http.Handler. ServeHTTP runs on the connection's
+// coroutine; when it returns the response is complete and the connection moves on.
+class HttpHandler {
  public:
-    HttpMuxEntry *entry;
-
- public:
-    IHttpHandler();
-    virtual ~IHttpHandler();
-
- public:
-    virtual bool is_not_found();
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r) = 0;
+    virtual ~HttpHandler() = default;
+    virtual void ServeHTTP(HttpResponseWriter &w, HttpRequest &r) = 0;
 };
 
-// Redirect to a fixed URL
-class HttpRedirectHandler : public IHttpHandler {
+typedef std::function<void(HttpResponseWriter &w, HttpRequest &r)> HttpHandlerFunc;
+
+// Adapts a function to HttpHandler, like Go's http.HandlerFunc.
+class HttpFuncHandler : public HttpHandler {
+ public:
+    explicit HttpFuncHandler(HttpHandlerFunc f) : f_(std::move(f)) {}
+    void ServeHTTP(HttpResponseWriter &w, HttpRequest &r) override { f_(w, r); }
+
  private:
-    std::string url;
-    int code;
-
- public:
-    HttpRedirectHandler(std::string u, int c);
-    virtual ~HttpRedirectHandler();
-
- public:
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+    HttpHandlerFunc f_;
 };
 
-// NotFound replies to the request with an HTTP 404 not found error.
-class HttpNotFoundHandler : public IHttpHandler {
- public:
-    HttpNotFoundHandler();
-    virtual ~HttpNotFoundHandler();
+// Replies with error as plain text and code, like Go's http.Error.
+void HttpError(HttpResponseWriter &w, const std::string &error, int code);
+// Replies 404.
+void HttpNotFound(HttpResponseWriter &w, HttpRequest &r);
+// Replies with a redirect to url, which may be relative to the request path.
+void HttpRedirect(HttpResponseWriter &w, HttpRequest &r, const std::string &url, int code);
 
- public:
-    virtual bool is_not_found();
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
-};
-
-// the mux entry for server mux.
-// the matcher info, for example, the pattern and handler.
-class HttpMuxEntry {
- public:
-    bool explicit_match;
-    IHttpHandler *handler;
-    std::string pattern;
-    bool enabled;
-
- public:
-    HttpMuxEntry();
-    virtual ~HttpMuxEntry();
-};
-
-// ServeMux is an HTTP request multiplexer.
-// It matches the URL of each incoming request against a list of registered
-// patterns and calls the handler for the pattern that
-// most closely matches the URL.
+// Routes requests by method, host and path, with Go 1.22 ServeMux patterns:
 //
-// Patterns name fixed, rooted paths, like "/favicon.ico",
-// or rooted subtrees, like "/images/" (note the trailing slash).
-// Longer patterns take precedence over shorter ones, so that
-// if there are handlers registered for both "/images/"
-// and "/images/thumbnails/", the latter handler will be
-// called for paths beginning "/images/thumbnails/" and the
-// former will receive requests for any other paths in the
-// "/images/" subtree.
+//   "[METHOD ][HOST]/[PATH]"
 //
-// Note that since a pattern ending in a slash names a rooted subtree,
-// the pattern "/" matches all paths not matched by other registered
-// patterns, not just the URL with Path == "/".
+//   "/index.html"           that path only
+//   "/static/"              the subtree: "/static/", "/static/a/b"...; "/static" redirects
+//   "/"                     everything not matched by another pattern
+//   "/users/{id}"           one segment, read with r.PathValue("id")
+//   "/files/{path...}"      the rest of the path, possibly empty
+//   "/blog/{$}"             "/blog/" only, not its subtree
+//   "GET /users/{id}"       GET (and HEAD) only; other methods get 405 with Allow
+//   "example.com/"          requests whose Host is example.com
 //
-// Patterns may optionally begin with a host name, restricting matches to
-// URLs on that host only.  Host-specific patterns take precedence over
-// general patterns, so that a handler might register for the two patterns
-// "/codesearch" and "codesearch.google.com/" without also taking over
-// requests for "http://www.google.com/".
-//
-// ServeMux also takes care of sanitizing the URL request path,
-// redirecting any request containing . or .. elements to an
-// equivalent .- and ..-free URL.
-class HttpServeMux {
- private:
-    // the pattern handler, to handle the http request.
-    std::map<std::string, HttpMuxEntry *> entries;
-    // the vhost handler.
-    // when find the handler to process the request,
-    // append the matched vhost when pattern not starts with /,
-    // for example, for pattern /index.html of vhost example.com,
-    // the path will rewrite to example.com/index.html
-    std::map<std::string, IHttpHandler *> vhosts;
-    void *connection_;
-
+// The most specific pattern wins: a literal segment over {name}, over a subtree or
+// {name...}, and a method-specific pattern over one without method. Paths with ".", ".."
+// or "//" are redirected to their clean form first.
+class HttpServeMux : public HttpHandler {
  public:
     HttpServeMux();
-    virtual ~HttpServeMux();
+    ~HttpServeMux();
 
- public:
-    /**
-     * initialize the http serve mux.
-     */
-    virtual int initialize();
-    void SetConnection(void *connection) { this->connection_ = connection; };
+    // ERROR_HTTP_PATTERN_EMPTY for an invalid pattern, ERROR_HTTP_PATTERN_DUPLICATED when
+    // the same method and path are registered twice.
+    int Handle(const std::string &pattern, std::shared_ptr<HttpHandler> handler);
+    // Takes ownership of handler.
+    int Handle(const std::string &pattern, HttpHandler *handler);
+    int HandleFunc(const std::string &pattern, HttpHandlerFunc f);
 
- public:
-    // Handle registers the handler for the given pattern.
-    // If a handler already exists for pattern, Handle panics.
-    virtual int handle(std::string pattern, IHttpHandler *handler);
-    virtual void remove_entry(std::string pattern);
-    // whether the http muxer can serve the specified message,
-    // if not, user can try next muxer.
-    virtual bool can_serve(HttpMessage *r);
-
- public:
-    virtual int serve_http(HttpResponseWriter *w, HttpMessage *r);
+    void ServeHTTP(HttpResponseWriter &w, HttpRequest &r) override;
 
  private:
-    virtual int find_handler(HttpMessage *r, IHttpHandler **ph);
-    virtual int match(HttpMessage *r, IHttpHandler **ph);
-    virtual bool path_match(std::string pattern, std::string path);
+    struct Route;
+    struct Node;
+    struct Match;
+
+    bool Walk(const Node *n, size_t seg, Match *m) const;
+    bool TryRoutes(const std::vector<Route> &routes, size_t rest, bool subtree, Match *m) const;
+    bool Find(const std::string &host, const std::string &path, Match *m) const;
+
+    std::unique_ptr<Node> root_;
+    std::map<std::string, std::unique_ptr<Node>> hosts_;
 };
