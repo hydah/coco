@@ -74,7 +74,7 @@ mux.HandleFunc("GET /hello/{name}", [](HttpResponseWriter &w, HttpRequest &r) {
 mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
     std::string body;
     r.body.ReadAll(&body);
-    w.Header().Set("Content-Type", "application/json");
+    w.Header().Set(HttpHeaderContentType, HttpContentTypeJson);
     w.Write(body);
 });
 

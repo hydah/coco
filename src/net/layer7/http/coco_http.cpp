@@ -38,11 +38,11 @@ int HttpServerConn::Serve(StreamConn &conn, HttpHandler *handler, const HttpServ
     while (!CocoShouldStop()) {
         int ret = ReadHttpRequest(&br, opt.max_header_bytes, &req);
         if (ret == ERROR_HTTP_HEADER_TOO_LARGE) {
-            WriteBareError(conn, 431);
+            WriteBareError(conn, HttpStatusRequestHeaderFieldsTooLarge);
             return ret;
         }
         if (ret == ERROR_HTTP_PARSE_HEADER || ret == ERROR_HTTP_PARSE_URI) {
-            WriteBareError(conn, 400);
+            WriteBareError(conn, HttpStatusBadRequest);
             return ret;
         }
         if (ret != COCO_SUCCESS) {
@@ -54,14 +54,15 @@ int HttpServerConn::Serve(StreamConn &conn, HttpHandler *handler, const HttpServ
         req.remote_addr = remote;
 
         // RFC 7230 5.4.
-        if (req.ProtoAtLeast(1, 1) && !req.header.Has("Host")) {
-            WriteBareError(conn, 400, "400 Bad Request: missing required Host header");
+        if (req.ProtoAtLeast(1, 1) && !req.header.Has(HttpHeaderHost)) {
+            WriteBareError(conn, HttpStatusBadRequest,
+                           "400 Bad Request: missing required Host header");
             return ERROR_HTTP_PARSE_HEADER;
         }
-        const std::string &expect = req.header.Get("Expect");
+        const std::string &expect = req.header.Get(HttpHeaderExpect);
         if (!expect.empty()) {
             if (strcasecmp(expect.c_str(), "100-continue") != 0 || !req.ProtoAtLeast(1, 1)) {
-                WriteBareError(conn, 417);
+                WriteBareError(conn, HttpStatusExpectationFailed);
                 return ERROR_HTTP_PARSE_HEADER;
             }
             if (!req.body.Eof()) {
@@ -112,7 +113,8 @@ void HttpConnPool::Put(std::unique_ptr<HttpClientConn> c) {
 HttpResponse::HttpResponse() = default;
 
 HttpResponse::~HttpResponse() {
-    if (!conn_ || close || status_code == 101 || !body.DiscardBuffered()) {
+    if (!conn_ || close || status_code == HttpStatusSwitchingProtocols ||
+        !body.DiscardBuffered()) {
         return;
     }
     std::shared_ptr<HttpConnPool> pool = pool_.lock();
@@ -198,14 +200,14 @@ HttpClient::HttpClient(int64_t timeout_us)
 HttpClient::~HttpClient() { pool_->Clear(); }
 
 int HttpClient::Get(const std::string &url, std::unique_ptr<HttpResponse> *resp) {
-    HttpRequest req("GET", url);
+    HttpRequest req(HttpMethodGet, url);
     return Do(req, resp);
 }
 
 int HttpClient::Post(const std::string &url, const std::string &content_type,
                      const std::string &body, std::unique_ptr<HttpResponse> *resp) {
-    HttpRequest req("POST", url, body);
-    req.header.Set("Content-Type", content_type);
+    HttpRequest req(HttpMethodPost, url, body);
+    req.header.Set(HttpHeaderContentType, content_type);
     return Do(req, resp);
 }
 
@@ -225,8 +227,10 @@ int HttpClient::Do(HttpRequest &req, std::unique_ptr<HttpResponse> *resp) {
             return ret;
         }
         int code = (*resp)->status_code;
-        const std::string &loc = (*resp)->header.Get("Location");
-        bool redirect = code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+        const std::string &loc = (*resp)->header.Get(HttpHeaderLocation);
+        bool redirect = code == HttpStatusMovedPermanently || code == HttpStatusFound ||
+                        code == HttpStatusSeeOther || code == HttpStatusTemporaryRedirect ||
+                        code == HttpStatusPermanentRedirect;
         if (!redirect || max_redirects <= 0 || loc.empty()) {
             return COCO_SUCCESS;
         }
@@ -244,16 +248,17 @@ int HttpClient::Do(HttpRequest &req, std::unique_ptr<HttpResponse> *resp) {
         r->header = cur->header;
         r->close = cur->close;
         // Like browsers and Go: 301/302/303 turn into a GET without a body.
-        if (code <= 303 && cur->method != "GET" && cur->method != "HEAD") {
-            r->method = "GET";
+        if (code <= HttpStatusSeeOther && cur->method != HttpMethodGet &&
+            cur->method != HttpMethodHead) {
+            r->method = HttpMethodGet;
             r->SetBody("");
-            r->header.Del("Content-Type");
-            r->header.Del("Content-Length");
+            r->header.Del(HttpHeaderContentType);
+            r->header.Del(HttpHeaderContentLength);
         }
         if (next.host != u.host) {
-            r->header.Del("Authorization");
-            r->header.Del("Cookie");
-            r->header.Del("WWW-Authenticate");
+            r->header.Del(HttpHeaderAuthorization);
+            r->header.Del(HttpHeaderCookie);
+            r->header.Del(HttpHeaderWWWAuthenticate);
         }
         // Frees the old response; its connection goes back to the pool if possible.
         resp->reset();
@@ -275,26 +280,26 @@ int HttpClient::RoundTrip(HttpRequest &req, const HttpUrl &u, std::unique_ptr<Ht
     std::string head;
     head.reserve(256);
     head.append(req.method).append(" ", 1).append(u.request_uri).append(" HTTP/1.1\r\n", 11);
-    if (!h.Has("Host")) {
+    if (!h.Has(HttpHeaderHost)) {
         head.append("Host: ").append(req.host.empty() ? u.host_header : req.host).append(HTTP_CRLF);
     }
-    if (!h.Has("User-Agent")) {
+    if (!h.Has(HttpHeaderUserAgent)) {
         head.append("User-Agent: coco\r\n");
     }
-    bool wants_length = !body.empty() || req.method == "POST" || req.method == "PUT" ||
-                        req.method == "PATCH";
-    if (wants_length && !h.Has("Content-Length") && !h.Has("Transfer-Encoding")) {
+    bool wants_length = !body.empty() || req.method == HttpMethodPost ||
+                        req.method == HttpMethodPut || req.method == HttpMethodPatch;
+    if (wants_length && !h.Has(HttpHeaderContentLength) && !h.Has(HttpHeaderTransferEncoding)) {
         head.append("Content-Length: ").append(std::to_string(body.size())).append(HTTP_CRLF);
     }
-    if (req.close && !h.Has("Connection")) {
+    if (req.close && !h.Has(HttpHeaderConnection)) {
         head.append("Connection: close\r\n");
     }
     h.WriteTo(&head);
     head.append(HTTP_CRLF);
 
     // Go's rule: only these may be sent twice without the caller knowing.
-    bool replayable = req.method == "GET" || req.method == "HEAD" || req.method == "OPTIONS" ||
-                      req.method == "TRACE";
+    bool replayable = req.method == HttpMethodGet || req.method == HttpMethodHead ||
+                      req.method == HttpMethodOptions || req.method == HttpMethodTrace;
     for (int attempt = 0;; ++attempt) {
         std::unique_ptr<HttpClientConn> c = pool_->Get(u.key);
         bool reused = c != nullptr;
@@ -317,7 +322,7 @@ int HttpClient::RoundTrip(HttpRequest &req, const HttpUrl &u, std::unique_ptr<Ht
             ret = ReadHttpResponse(&c->br, max_header_bytes, req.method, resp.get());
             // 1xx before the final response, e.g. 100 Continue, are skipped.
             if (ret != COCO_SUCCESS || resp->status_code < 100 || resp->status_code > 199 ||
-                resp->status_code == 101) {
+                resp->status_code == HttpStatusSwitchingProtocols) {
                 break;
             }
         }

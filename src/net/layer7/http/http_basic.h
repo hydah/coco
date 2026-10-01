@@ -5,50 +5,94 @@
 #include <utility>
 #include <vector>
 
-// Status codes are http-parser's enum http_status: HTTP_STATUS_OK, HTTP_STATUS_NOT_FOUND...
 #include "http-parser/http_parser.h"
 
-// The CONSTS_HTTP_* names predate the http_status enum and are kept for existing code.
-#define CONSTS_HTTP_Continue 100
-#define CONSTS_HTTP_SwitchingProtocols 101
-#define CONSTS_HTTP_OK 200
-#define CONSTS_HTTP_Created 201
-#define CONSTS_HTTP_Accepted 202
-#define CONSTS_HTTP_NonAuthoritativeInformation 203
-#define CONSTS_HTTP_NoContent 204
-#define CONSTS_HTTP_ResetContent 205
-#define CONSTS_HTTP_PartialContent 206
-#define CONSTS_HTTP_MultipleChoices 300
-#define CONSTS_HTTP_MovedPermanently 301
-#define CONSTS_HTTP_Found 302
-#define CONSTS_HTTP_SeeOther 303
-#define CONSTS_HTTP_NotModified 304
-#define CONSTS_HTTP_UseProxy 305
-#define CONSTS_HTTP_TemporaryRedirect 307
-#define CONSTS_HTTP_BadRequest 400
-#define CONSTS_HTTP_Unauthorized 401
-#define CONSTS_HTTP_PaymentRequired 402
-#define CONSTS_HTTP_Forbidden 403
-#define CONSTS_HTTP_NotFound 404
-#define CONSTS_HTTP_MethodNotAllowed 405
-#define CONSTS_HTTP_NotAcceptable 406
-#define CONSTS_HTTP_ProxyAuthenticationRequired 407
-#define CONSTS_HTTP_RequestTimeout 408
-#define CONSTS_HTTP_Conflict 409
-#define CONSTS_HTTP_Gone 410
-#define CONSTS_HTTP_LengthRequired 411
-#define CONSTS_HTTP_PreconditionFailed 412
-#define CONSTS_HTTP_RequestEntityTooLarge 413
-#define CONSTS_HTTP_RequestURITooLarge 414
-#define CONSTS_HTTP_UnsupportedMediaType 415
-#define CONSTS_HTTP_RequestedRangeNotSatisfiable 416
-#define CONSTS_HTTP_ExpectationFailed 417
-#define CONSTS_HTTP_InternalServerError 500
-#define CONSTS_HTTP_NotImplemented 501
-#define CONSTS_HTTP_BadGateway 502
-#define CONSTS_HTTP_ServiceUnavailable 503
-#define CONSTS_HTTP_GatewayTimeout 504
-#define CONSTS_HTTP_HTTPVersionNotSupported 505
+// Status codes, named as in Go's net/http.
+enum HttpStatus {
+    HttpStatusContinue = 100,
+    HttpStatusSwitchingProtocols = 101,
+
+    HttpStatusOK = 200,
+    HttpStatusCreated = 201,
+    HttpStatusAccepted = 202,
+    HttpStatusNonAuthoritativeInfo = 203,
+    HttpStatusNoContent = 204,
+    HttpStatusResetContent = 205,
+    HttpStatusPartialContent = 206,
+
+    HttpStatusMultipleChoices = 300,
+    HttpStatusMovedPermanently = 301,
+    HttpStatusFound = 302,
+    HttpStatusSeeOther = 303,
+    HttpStatusNotModified = 304,
+    HttpStatusUseProxy = 305,
+    HttpStatusTemporaryRedirect = 307,
+    HttpStatusPermanentRedirect = 308,
+
+    HttpStatusBadRequest = 400,
+    HttpStatusUnauthorized = 401,
+    HttpStatusPaymentRequired = 402,
+    HttpStatusForbidden = 403,
+    HttpStatusNotFound = 404,
+    HttpStatusMethodNotAllowed = 405,
+    HttpStatusNotAcceptable = 406,
+    HttpStatusProxyAuthRequired = 407,
+    HttpStatusRequestTimeout = 408,
+    HttpStatusConflict = 409,
+    HttpStatusGone = 410,
+    HttpStatusLengthRequired = 411,
+    HttpStatusPreconditionFailed = 412,
+    HttpStatusRequestEntityTooLarge = 413,
+    HttpStatusRequestURITooLong = 414,
+    HttpStatusUnsupportedMediaType = 415,
+    HttpStatusRequestedRangeNotSatisfiable = 416,
+    HttpStatusExpectationFailed = 417,
+    HttpStatusUnprocessableEntity = 422,
+    HttpStatusTooManyRequests = 429,
+    HttpStatusRequestHeaderFieldsTooLarge = 431,
+
+    HttpStatusInternalServerError = 500,
+    HttpStatusNotImplemented = 501,
+    HttpStatusBadGateway = 502,
+    HttpStatusServiceUnavailable = 503,
+    HttpStatusGatewayTimeout = 504,
+    HttpStatusHTTPVersionNotSupported = 505,
+};
+
+// Methods, as in Go's net/http. HttpRequest::method holds one of these.
+constexpr char HttpMethodGet[] = "GET";
+constexpr char HttpMethodHead[] = "HEAD";
+constexpr char HttpMethodPost[] = "POST";
+constexpr char HttpMethodPut[] = "PUT";
+constexpr char HttpMethodPatch[] = "PATCH";
+constexpr char HttpMethodDelete[] = "DELETE";
+constexpr char HttpMethodConnect[] = "CONNECT";
+constexpr char HttpMethodOptions[] = "OPTIONS";
+constexpr char HttpMethodTrace[] = "TRACE";
+
+// Common Content-Type values.
+constexpr char HttpContentTypeText[] = "text/plain; charset=utf-8";
+constexpr char HttpContentTypeHtml[] = "text/html; charset=utf-8";
+constexpr char HttpContentTypeJson[] = "application/json";
+constexpr char HttpContentTypeForm[] = "application/x-www-form-urlencoded";
+constexpr char HttpContentTypeOctetStream[] = "application/octet-stream";
+
+// Header field names. Lookups ignore case, so these are only to avoid typos.
+constexpr char HttpHeaderAllow[] = "Allow";
+constexpr char HttpHeaderAuthorization[] = "Authorization";
+constexpr char HttpHeaderConnection[] = "Connection";
+constexpr char HttpHeaderContentLength[] = "Content-Length";
+constexpr char HttpHeaderContentType[] = "Content-Type";
+constexpr char HttpHeaderCookie[] = "Cookie";
+constexpr char HttpHeaderDate[] = "Date";
+constexpr char HttpHeaderExpect[] = "Expect";
+constexpr char HttpHeaderHost[] = "Host";
+constexpr char HttpHeaderLocation[] = "Location";
+constexpr char HttpHeaderSetCookie[] = "Set-Cookie";
+constexpr char HttpHeaderTransferEncoding[] = "Transfer-Encoding";
+constexpr char HttpHeaderUpgrade[] = "Upgrade";
+constexpr char HttpHeaderUserAgent[] = "User-Agent";
+constexpr char HttpHeaderWWWAuthenticate[] = "WWW-Authenticate";
 
 #define HTTP_CR '\r'
 #define HTTP_LF '\n'

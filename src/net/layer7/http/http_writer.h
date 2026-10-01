@@ -63,7 +63,7 @@ class HttpResponseWriter {
     HttpRequest *req_ = nullptr;
     HttpHeader header_;
 
-    int status_ = 200;
+    int status_ = HttpStatusOK;
     bool wrote_header_ = false;
     bool committed_ = false;
     bool chunked_ = false;

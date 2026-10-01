@@ -34,12 +34,12 @@ HttpResponseWriter::HttpResponseWriter(StreamConn *conn, BufReader *br) : conn_(
 void HttpResponseWriter::Reset(HttpRequest *r) {
     req_ = r;
     header_.Clear();
-    status_ = 200;
+    status_ = HttpStatusOK;
     wrote_header_ = false;
     committed_ = false;
     chunked_ = false;
     body_allowed_ = true;
-    is_head_ = r->method == "HEAD";
+    is_head_ = r->method == HttpMethodHead;
     close_ = r->close || r->IsUpgrade();
     hijacked_ = false;
     content_length_ = -1;
@@ -60,13 +60,13 @@ void HttpResponseWriter::WriteHeader(int code) {
     }
     if (code < 100 || code > 999) {
         coco_error("http: invalid status code %d, sending 500", code);
-        code = 500;
+        code = HttpStatusInternalServerError;
     }
     wrote_header_ = true;
     status_ = code;
     body_allowed_ = HttpBodyAllowedForStatus(code);
 
-    const std::string &cl = header_.Get("Content-Length");
+    const std::string &cl = header_.Get(HttpHeaderContentLength);
     if (!cl.empty()) {
         char *end = nullptr;
         long long v = strtoll(cl.c_str(), &end, 10);
@@ -74,7 +74,7 @@ void HttpResponseWriter::WriteHeader(int code) {
             content_length_ = v;
         } else {
             coco_warn("http: invalid Content-Length %s, ignored", cl.c_str());
-            header_.Del("Content-Length");
+            header_.Del(HttpHeaderContentLength);
         }
     }
 }
@@ -87,7 +87,7 @@ int HttpResponseWriter::Write(const void *data, size_t size) {
         return err_;
     }
     if (!wrote_header_) {
-        WriteHeader(200);
+        WriteHeader(HttpStatusOK);
     }
     if (size == 0) {
         return COCO_SUCCESS;
@@ -170,24 +170,24 @@ void HttpResponseWriter::Commit(bool final) {
 
     if (content_length_ < 0 && final && body_allowed_ && (!is_head_ || written_ > 0)) {
         content_length_ = written_;
-        header_.Set("Content-Length", std::to_string(written_));
+        header_.Set(HttpHeaderContentLength, std::to_string(written_));
     }
     if (!body_allowed_) {
-        header_.Del("Transfer-Encoding");
+        header_.Del(HttpHeaderTransferEncoding);
     } else if (content_length_ < 0 && !is_head_) {
         if (req_->ProtoAtLeast(1, 1)) {
             chunked_ = true;
-            header_.Set("Transfer-Encoding", "chunked");
+            header_.Set(HttpHeaderTransferEncoding, "chunked");
         } else {
             close_ = true;
         }
     }
 
-    if (body_allowed_ && !pending_.empty() && !header_.Has("Content-Type")) {
-        header_.Set("Content-Type", HttpDetectContentType(pending_.data(), pending_.size()));
+    if (body_allowed_ && !pending_.empty() && !header_.Has(HttpHeaderContentType)) {
+        header_.Set(HttpHeaderContentType, HttpDetectContentType(pending_.data(), pending_.size()));
     }
-    if (!header_.Has("Date")) {
-        header_.Set("Date", HttpDate());
+    if (!header_.Has(HttpHeaderDate)) {
+        header_.Set(HttpHeaderDate, HttpDate());
     }
 
     // The client waits for "100 Continue" before sending the body; now it never comes,
@@ -198,15 +198,15 @@ void HttpResponseWriter::Commit(bool final) {
             close_ = true;
         }
     }
-    if (header_.HasToken("Connection", "close")) {
+    if (header_.HasToken(HttpHeaderConnection, "close")) {
         close_ = true;
     }
     if (close_) {
-        if (!header_.HasToken("Connection", "close")) {
-            header_.Set("Connection", "close");
+        if (!header_.HasToken(HttpHeaderConnection, "close")) {
+            header_.Set(HttpHeaderConnection, "close");
         }
     } else if (!req_->ProtoAtLeast(1, 1)) {
-        header_.Set("Connection", "keep-alive");
+        header_.Set(HttpHeaderConnection, "keep-alive");
     }
 
     char line[64];
@@ -236,7 +236,7 @@ int HttpResponseWriter::Flush() {
         return ERROR_HTTP_HIJACKED;
     }
     if (!wrote_header_) {
-        WriteHeader(200);
+        WriteHeader(HttpStatusOK);
     }
     if (!committed_) {
         Commit(false);
@@ -249,7 +249,7 @@ int HttpResponseWriter::Finish() {
         return COCO_SUCCESS;
     }
     if (!wrote_header_) {
-        WriteHeader(200);
+        WriteHeader(HttpStatusOK);
     }
     if (!committed_) {
         Commit(true);

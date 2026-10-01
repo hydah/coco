@@ -10,14 +10,16 @@
 
 void HttpError(HttpResponseWriter &w, const std::string &error, int code) {
     HttpHeader &h = w.Header();
-    h.Del("Content-Length");
-    h.Set("Content-Type", "text/plain; charset=utf-8");
+    h.Del(HttpHeaderContentLength);
+    h.Set(HttpHeaderContentType, HttpContentTypeText);
     h.Set("X-Content-Type-Options", "nosniff");
     w.WriteHeader(code);
     w.Write(error + "\n");
 }
 
-void HttpNotFound(HttpResponseWriter &w, HttpRequest &r) { HttpError(w, "404 page not found", 404); }
+void HttpNotFound(HttpResponseWriter &w, HttpRequest &r) {
+    HttpError(w, "404 page not found", HttpStatusNotFound);
+}
 
 static std::string HtmlEscape(const std::string &s) {
     std::string out;
@@ -45,10 +47,10 @@ void HttpRedirect(HttpResponseWriter &w, HttpRequest &r, const std::string &url,
     }
 
     HttpHeader &h = w.Header();
-    h.Set("Location", loc);
-    bool get_or_head = r.method == "GET" || r.method == "HEAD";
-    if (get_or_head && !h.Has("Content-Type")) {
-        h.Set("Content-Type", "text/html; charset=utf-8");
+    h.Set(HttpHeaderLocation, loc);
+    bool get_or_head = r.method == HttpMethodGet || r.method == HttpMethodHead;
+    if (get_or_head && !h.Has(HttpHeaderContentType)) {
+        h.Set(HttpHeaderContentType, HttpContentTypeHtml);
     }
     w.WriteHeader(code);
     if (get_or_head) {
@@ -230,7 +232,7 @@ bool HttpServeMux::TryRoutes(const std::vector<Route> &routes, size_t rest, bool
     for (const Route &r : routes) {
         if (r.method == method) {
             exact = &r;
-        } else if (r.method == "GET" && method == "HEAD") {
+        } else if (r.method == HttpMethodGet && method == HttpMethodHead) {
             head = &r;
         } else if (r.method.empty()) {
             any = &r;
@@ -240,8 +242,8 @@ bool HttpServeMux::TryRoutes(const std::vector<Route> &routes, size_t rest, bool
     if (found == nullptr) {
         for (const Route &r : routes) {
             m->allow.insert(r.method);
-            if (r.method == "GET") {
-                m->allow.insert("HEAD");
+            if (r.method == HttpMethodGet) {
+                m->allow.insert(HttpMethodHead);
             }
         }
         return false;
@@ -312,20 +314,20 @@ bool HttpServeMux::Find(const std::string &host, const std::string &path, Match 
 void HttpServeMux::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
     if (r.url == "*") {
         if (r.ProtoAtLeast(1, 1)) {
-            w.Header().Set("Connection", "close");
+            w.Header().Set(HttpHeaderConnection, "close");
         }
-        w.WriteHeader(400);
+        w.WriteHeader(HttpStatusBadRequest);
         return;
     }
 
     std::string query = r.raw_query.empty() ? "" : "?" + r.raw_query;
-    if (r.method != "CONNECT") {
+    if (r.method != HttpMethodConnect) {
         // The escaped path as sent, so a redirect keeps its escapes.
         std::string raw = !r.url.empty() && r.url[0] == '/' ? r.url.substr(0, r.url.find('?'))
                                                               : r.path;
         std::string clean = HttpCleanPath(raw);
         if (clean != raw) {
-            HttpRedirect(w, r, clean + query, 301);
+            HttpRedirect(w, r, clean + query, HttpStatusMovedPermanently);
             return;
         }
     }
@@ -336,7 +338,7 @@ void HttpServeMux::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
 
     // Like Go: when "/tree/" is registered, "/tree" redirects to it unless some pattern
     // matches "/tree" exactly; a broader subtree such as "/" does not count.
-    if ((!found || m.subtree) && r.method != "CONNECT" && !r.path.empty() &&
+    if ((!found || m.subtree) && r.method != HttpMethodConnect && !r.path.empty() &&
         r.path.back() != '/') {
         std::string with_slash = r.path + "/";
         Match m2;
@@ -344,7 +346,7 @@ void HttpServeMux::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
         if (Find(r.host, with_slash, &m2) && m2.subtree && m2.rest == with_slash.size()) {
             std::string raw = !r.url.empty() && r.url[0] == '/' ? r.url.substr(0, r.url.find('?'))
                                                                   : r.path;
-            HttpRedirect(w, r, raw + "/" + query, 301);
+            HttpRedirect(w, r, raw + "/" + query, HttpStatusMovedPermanently);
             return;
         }
     }
@@ -371,8 +373,8 @@ void HttpServeMux::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
             }
             allow += allow.empty() ? method : ", " + method;
         }
-        w.Header().Set("Allow", allow);
-        HttpError(w, "Method Not Allowed", 405);
+        w.Header().Set(HttpHeaderAllow, allow);
+        HttpError(w, "Method Not Allowed", HttpStatusMethodNotAllowed);
         return;
     }
 

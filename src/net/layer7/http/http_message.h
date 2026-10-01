@@ -59,7 +59,7 @@ class HttpRequest {
     // url is absolute, "http://host[:port]/path?query" or https://.
     HttpRequest(const std::string &method, const std::string &url, const std::string &body = "");
 
-    std::string method = "GET";
+    std::string method = HttpMethodGet;
     // Server: the request-target as sent, e.g. "/a%20b?x=1". Client: the absolute URL.
     std::string url;
     // Server: the unescaped path, "/a b", and the query without '?', "x=1".

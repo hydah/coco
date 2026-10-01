@@ -84,7 +84,8 @@ int HttpBodyReader::ReadChunkHeader() {
     }
     // Anything after the size must be chunk extensions or whitespace.
     char next = digits < len ? p[digits] : '\n';
-    if (digits == 0 || (next != ';' && next != ' ' && next != '\t' && next != '\r' && next != '\n')) {
+    if (digits == 0 ||
+        (next != ';' && next != ' ' && next != '\t' && next != '\r' && next != '\n')) {
         return ERROR_HTTP_INVALID_CHUNK_HEADER;
     }
     br_->Consume(len);
@@ -290,7 +291,8 @@ static int ReadHeaderBlock(BufReader *br, size_t max_bytes, size_t *len) {
     size_t from = 0;
     while (true) {
         // RFC 7230 3.5: ignore empty lines before the start line.
-        while (from == 0 && br->Buffered() > 0 && (br->Peek()[0] == '\r' || br->Peek()[0] == '\n')) {
+        while (from == 0 && br->Buffered() > 0 &&
+               (br->Peek()[0] == '\r' || br->Peek()[0] == '\n')) {
             br->Consume(1);
         }
         size_t n = br->Buffered();
@@ -445,7 +447,7 @@ int HttpRequestParser::ParseRequest(BufReader *br, size_t max_header_bytes, Http
     req->proto = "HTTP/" + std::to_string(hp.major) + "." + std::to_string(hp.minor);
     req->close = !hp.keep_alive;
     req->upgrade_ = hp.upgrade;
-    req->host = req->header.Get("Host");
+    req->host = req->header.Get(HttpHeaderHost);
 
     const std::string &url = req->url;
     if (!url.empty() && url[0] == '/') {
@@ -521,7 +523,7 @@ int HttpRequestParser::ParseResponse(BufReader *br, size_t max_header_bytes,
     resp->proto = "HTTP/" + std::to_string(hp.major) + "." + std::to_string(hp.minor);
     resp->close = !hp.keep_alive;
 
-    if (method == "HEAD" || !HttpBodyAllowedForStatus(code)) {
+    if (method == HttpMethodHead || !HttpBodyAllowedForStatus(code)) {
         resp->content_length = hp.has_length ? hp.length : 0;
         resp->body.Reset(br, HttpBodyReader::kNone);
     } else if (hp.chunked) {

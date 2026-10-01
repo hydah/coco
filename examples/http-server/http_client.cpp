@@ -6,31 +6,25 @@
 #include "net/layer7/http/coco_http.hpp"
 #include "net/tls/coco_tls.hpp"
 
+static void Print(int ret, HttpResponse *resp) {
+    std::string body;
+    if (ret == COCO_SUCCESS && (ret = resp->body.ReadAll(&body)) == COCO_SUCCESS) {
+        std::cout << resp->status << ": " << body << std::endl;
+    } else {
+        std::cerr << "request failed: " << ret << std::endl;
+    }
+}
+
 // Talks to http_server: GET, then POST on the same pooled connection.
 int main(int argc, char **argv) {
     CocoInit();
-
     std::string base = argc > 1 ? argv[1] : "https://127.0.0.1:9082";
+
     HttpClient client;
     client.SetTlsDialer(TlsDialer());
-
     std::unique_ptr<HttpResponse> resp;
-    int ret = client.Get(base + "/hello/coco", &resp);
-    if (ret != COCO_SUCCESS) {
-        std::cerr << "GET failed: " << ret << std::endl;
-        return 1;
-    }
-    std::string body;
-    resp->body.ReadAll(&body);
-    std::cout << resp->status << ": " << body;
 
-    ret = client.Post(base + "/echo", "text/plain", "ping", &resp);
-    if (ret != COCO_SUCCESS) {
-        std::cerr << "POST failed: " << ret << std::endl;
-        return 1;
-    }
-    body.clear();
-    resp->body.ReadAll(&body);
-    std::cout << resp->status << ": " << body << std::endl;
+    Print(client.Get(base + "/hello/coco", &resp), resp.get());
+    Print(client.Post(base + "/echo", HttpContentTypeText, "ping", &resp), resp.get());
     return 0;
 }

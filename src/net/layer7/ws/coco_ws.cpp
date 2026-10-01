@@ -307,11 +307,11 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
     client.max_redirects = 0;
 
     std::string host_part = host.find(':') != std::string::npos ? "[" + host + "]" : host;
-    HttpRequest req("GET", std::string(is_wss ? "https://" : "http://") + host_part + ":" +
+    HttpRequest req(HttpMethodGet, std::string(is_wss ? "https://" : "http://") + host_part + ":" +
                                std::to_string(port) + path);
     sec_websocket_key_ = NewWebSocketKey();
-    req.header.Set("Upgrade", "websocket");
-    req.header.Set("Connection", "Upgrade");
+    req.header.Set(HttpHeaderUpgrade, "websocket");
+    req.header.Set(HttpHeaderConnection, "Upgrade");
     req.header.Set("Sec-WebSocket-Version", "13");
     req.header.Set("Sec-WebSocket-Key", sec_websocket_key_);
 
@@ -320,7 +320,7 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
     if (ret != COCO_SUCCESS) {
         return ret;
     }
-    if (resp->status_code != 101) {
+    if (resp->status_code != HttpStatusSwitchingProtocols) {
         coco_error("websocket: handshake answered %s", resp->status.c_str());
         return ERROR_HTTP_STATUS_INVALID;
     }
@@ -354,14 +354,14 @@ int WebSocketClient::Send(uint8_t *buf, ssize_t len, WebSocketHeader::Type data_
 void WebSocketHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r) {
     // RFC 6455 4.2.1. IsUpgrade() covers the Connection: upgrade token.
     const std::string &key = r.header.Get("Sec-WebSocket-Key");
-    if (r.method != "GET" || !r.IsUpgrade() || !r.header.HasToken("Upgrade", "websocket") ||
-        base64::decode(key).size() != 16) {
-        HttpError(w, HttpStatusText(400), 400);
+    if (r.method != HttpMethodGet || !r.IsUpgrade() ||
+        !r.header.HasToken(HttpHeaderUpgrade, "websocket") || base64::decode(key).size() != 16) {
+        HttpError(w, HttpStatusText(HttpStatusBadRequest), HttpStatusBadRequest);
         return;
     }
     if (r.header.Get("Sec-WebSocket-Version") != "13") {
         w.Header().Set("Sec-WebSocket-Version", "13");
-        HttpError(w, HttpStatusText(400), 400);
+        HttpError(w, HttpStatusText(HttpStatusBadRequest), HttpStatusBadRequest);
         return;
     }
 

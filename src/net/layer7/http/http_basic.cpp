@@ -33,7 +33,7 @@ static bool HasPrefix(const char *p, size_t n, const char *prefix, size_t len) {
 
 std::string HttpDetectContentType(const char *data, size_t size) {
     if (data == nullptr || size == 0) {
-        return "text/plain; charset=utf-8";
+        return HttpContentTypeText;
     }
     if (size > 512) {
         size = 512;
@@ -53,7 +53,7 @@ std::string HttpDetectContentType(const char *data, size_t size) {
     for (const char *tag : kHtmlTags) {
         size_t len = strlen(tag);
         if (HasPrefixFold(p, n, tag) && n > len && (p[len] == ' ' || p[len] == '>')) {
-            return "text/html; charset=utf-8";
+            return HttpContentTypeHtml;
         }
     }
     if (HasPrefix(p, n, "<?xml", 5)) {
@@ -73,7 +73,7 @@ std::string HttpDetectContentType(const char *data, size_t size) {
         {"GIF89a", 6, "image/gif"},
         {"\x1f\x8b\x08", 3, "application/x-gzip"},
         {"PK\x03\x04", 4, "application/zip"},
-        {"\xef\xbb\xbf", 3, "text/plain; charset=utf-8"},
+        {"\xef\xbb\xbf", 3, HttpContentTypeText},
     };
     for (const Magic &m : kMagics) {
         if (HasPrefix(data, size, m.sig, m.len)) {
@@ -87,10 +87,10 @@ std::string HttpDetectContentType(const char *data, size_t size) {
     for (size_t i = 0; i < size; ++i) {
         unsigned char c = (unsigned char)data[i];
         if (c <= 0x08 || c == 0x0B || (c >= 0x0E && c <= 0x1A) || (c >= 0x1C && c <= 0x1F)) {
-            return "application/octet-stream";
+            return HttpContentTypeOctetStream;
         }
     }
-    return "text/plain; charset=utf-8";
+    return HttpContentTypeText;
 }
 
 static bool EqualFold(const std::string &a, const std::string &b) {

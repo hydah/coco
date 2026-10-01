@@ -17,14 +17,14 @@ int main() {
     mux.HandleFunc("POST /echo", [](HttpResponseWriter &w, HttpRequest &r) {
         std::string body;
         if (r.body.ReadAll(&body) != COCO_SUCCESS) {
-            HttpError(w, "bad body", 400);
+            HttpError(w, "bad body", HttpStatusBadRequest);
             return;
         }
-        w.Header().Set("Content-Type", r.header.Get("Content-Type"));
+        w.Header().Set(HttpHeaderContentType, r.header.Get(HttpHeaderContentType));
         w.Write(body);
     });
     mux.HandleFunc("/", [](HttpResponseWriter &w, HttpRequest &r) {
-        w.Header().Set("Content-Type", "application/json");
+        w.Header().Set(HttpHeaderContentType, HttpContentTypeJson);
         w.Write("{\"path\":\"" + r.path + "\",\"q\":\"" + r.Query().Get("q") + "\"}\n");
     });
 
