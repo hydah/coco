@@ -27,8 +27,14 @@ class TlsConfig {
     // For accepting: loads a PEM private key and certificate chain.
     static int NewServer(const std::string &key_file, const std::string &crt_file,
                          std::shared_ptr<TlsConfig> *cfg);
-    // For connecting. The peer's certificate is not verified.
+    // For connecting. The peer's certificate is not verified until
+    // EnablePeerVerification().
     static int NewClient(std::shared_ptr<TlsConfig> *cfg);
+
+    // Client only. Turns on SSL_VERIFY_PEER and loads the default CA paths.
+    // TlsDialer then sends SNI and checks the certificate hostname.
+    int EnablePeerVerification();
+    bool VerifyPeer() const { return verify_peer_; }
 
     bool IsServer() const { return server_; }
     SSL_CTX *ctx() const { return ctx_; }
@@ -38,6 +44,7 @@ class TlsConfig {
 
     SSL_CTX *ctx_;
     bool server_;
+    bool verify_peer_ = false;
 };
 
 // TLS over any StreamConn, as the side the config is for. The handshake runs once, on the
@@ -51,6 +58,10 @@ class TlsConn : public StreamConn {
 
     // Returns the handshake's result, running it if no one has yet.
     int Handshake();
+
+    // Hostname for SNI. When the config verifies peers, the certificate must
+    // match this name. Call before the handshake.
+    void SetPeerName(const std::string &name) { peer_name_ = name; }
 
     int Read(void *buf, size_t size, ssize_t *nread) override;
     int Write(void *buf, size_t size, ssize_t *nwrite) override;
@@ -69,6 +80,7 @@ class TlsConn : public StreamConn {
 
     std::unique_ptr<StreamConn> under_;
     std::shared_ptr<TlsConfig> cfg_;
+    std::string peer_name_;
     SSL *ssl_ = nullptr;
     BIO *bio_in_ = nullptr;
     BIO *bio_out_ = nullptr;

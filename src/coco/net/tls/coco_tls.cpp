@@ -2,6 +2,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 
 #include <assert.h>
 
@@ -87,6 +88,17 @@ int TlsConfig::NewClient(std::shared_ptr<TlsConfig>* cfg) {
     return COCO_SUCCESS;
 }
 
+int TlsConfig::EnablePeerVerification() {
+    if (server_ || ctx_ == nullptr) {
+        return ERROR_HTTPS_HANDSHAKE;
+    }
+    // Best effort: a later SSL_CTX_load_verify_locations can still add CAs.
+    SSL_CTX_set_default_verify_paths(ctx_);
+    SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, NULL);
+    verify_peer_ = true;
+    return COCO_SUCCESS;
+}
+
 TlsConn::TlsConn(std::unique_ptr<StreamConn> under, std::shared_ptr<TlsConfig> cfg)
     : under_(std::move(under)), cfg_(std::move(cfg)) {
     handshake_lock_ = st_mutex_new();
@@ -160,6 +172,16 @@ int TlsConn::Setup() {
         SSL_set_accept_state(ssl_);
     } else {
         SSL_set_connect_state(ssl_);
+        if (!peer_name_.empty()) {
+            SSL_set_tlsext_host_name(ssl_, peer_name_.c_str());
+            if (cfg_->VerifyPeer()) {
+                X509_VERIFY_PARAM* param = SSL_get0_param(ssl_);
+                if (X509_VERIFY_PARAM_set1_host(param, peer_name_.c_str(), 0) != 1) {
+                    coco_error("set tls hostname");
+                    return ERROR_HTTPS_HANDSHAKE;
+                }
+            }
+        }
     }
     return COCO_SUCCESS;
 }
@@ -362,6 +384,7 @@ StreamDialer TlsDialer(std::shared_ptr<TlsConfig> cfg, StreamDialer under) {
         raw->SetTimeout(timeout_us);
 
         std::unique_ptr<TlsConn> tls(new TlsConn(std::move(raw), c));
+        tls->SetPeerName(host);
         if ((ret = tls->Handshake()) != COCO_SUCCESS) {
             coco_error("tls handshake with %s:%d failed. ret=%d", host.c_str(), port, ret);
             return ret;

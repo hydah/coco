@@ -316,6 +316,9 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
     std::string host_part = host.find(':') != std::string::npos ? "[" + host + "]" : host;
     HttpRequest req(HttpMethodGet, std::string(is_wss ? "https://" : "http://") + host_part + ":" +
                                std::to_string(port) + path);
+    for (size_t i = 0; i < extra_headers_.size(); i++) {
+        req.header.Set(extra_headers_[i].first, extra_headers_[i].second);
+    }
     sec_websocket_key_ = NewWebSocketKey();
     req.header.Set(HttpHeaderUpgrade, "websocket");
     req.header.Set(HttpHeaderConnection, "Upgrade");
@@ -338,7 +341,39 @@ int WebSocketClient::Handshake(bool is_wss, const std::string &host, uint16_t po
 
     upgrade_ = std::move(resp);
     conn_ = new WebSocketConn(upgrade_->Conn(), upgrade_->Reader(), true);
+    if (recv_timeout_set_) {
+        conn_->SetRecvTimeout(recv_timeout_us_);
+    }
+    if (send_timeout_set_) {
+        conn_->SetSendTimeout(send_timeout_us_);
+    }
     return COCO_SUCCESS;
+}
+
+void WebSocketClient::SetHeader(const std::string& key, const std::string& value) {
+    for (size_t i = 0; i < extra_headers_.size(); i++) {
+        if (extra_headers_[i].first == key) {
+            extra_headers_[i].second = value;
+            return;
+        }
+    }
+    extra_headers_.push_back(std::make_pair(key, value));
+}
+
+void WebSocketClient::SetRecvTimeout(int64_t timeout_us) {
+    recv_timeout_set_ = true;
+    recv_timeout_us_ = timeout_us;
+    if (conn_ != nullptr) {
+        conn_->SetRecvTimeout(timeout_us);
+    }
+}
+
+void WebSocketClient::SetSendTimeout(int64_t timeout_us) {
+    send_timeout_set_ = true;
+    send_timeout_us_ = timeout_us;
+    if (conn_ != nullptr) {
+        conn_->SetSendTimeout(timeout_us);
+    }
 }
 
 int WebSocketClient::Stop() {

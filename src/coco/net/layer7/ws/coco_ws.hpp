@@ -1,6 +1,8 @@
 #pragma once
 #include <deque>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 #include "coco/base/st_fwd.hpp"
 
@@ -46,6 +48,11 @@ class WebSocketConn {
         return Send((const uint8_t *)data.data(), data.size(), data_type);
     }
     bool Closed() const { return closed_; }
+
+    // Replaces the timeouts on the underlying stream. The constructor sets the
+    // read side to HTTP_RECV_TIMEOUT_US (60s); kNoTimeout waits forever.
+    void SetRecvTimeout(int64_t timeout_us) { conn_->SetRecvTimeout(timeout_us); }
+    void SetSendTimeout(int64_t timeout_us) { conn_->SetSendTimeout(timeout_us); }
 
  private:
     friend class WebSocketClient;
@@ -106,6 +113,16 @@ class WebSocketClient {
     // without one they fail with ERROR_HTTPS_NOT_SUPPORTED. ws:// uses TcpDialer().
     void SetTlsDialer(StreamDialer dialer) { tls_dialer_ = dialer; }
 
+    // Extra handshake request headers. Required upgrade headers are set
+    // afterwards, so they win if a name collides. Safe to call before Dial.
+    void SetHeader(const std::string &key, const std::string &value);
+
+    // Applied now if already connected, and again after the next Dial.
+    // kNoTimeout never expires. Until set, reads use the 60s idle default and
+    // writes keep Dial's timeout.
+    void SetRecvTimeout(int64_t timeout_us);
+    void SetSendTimeout(int64_t timeout_us);
+
     // Connects to url, "ws://host[:port][/path]" or "wss://...", and completes the
     // handshake. timeout_us bounds the connect, the handshake and every write.
     int Dial(const std::string &url, uint64_t timeout_us = WS_CLIENT_TIMEOUT_US);
@@ -140,6 +157,11 @@ class WebSocketClient {
     std::string sec_websocket_key_;
     ConnManager *manager_;
     StreamDialer tls_dialer_;
+    std::vector<std::pair<std::string, std::string>> extra_headers_;
+    bool recv_timeout_set_ = false;
+    bool send_timeout_set_ = false;
+    int64_t recv_timeout_us_ = 0;
+    int64_t send_timeout_us_ = 0;
 
     // The 101 response: owns the socket and the buffer the connection reads through.
     std::unique_ptr<HttpResponse> upgrade_;
