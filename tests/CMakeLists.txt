@@ -9,6 +9,7 @@ add_executable(coco_tests
     http_test.cpp
     runtime_test.cpp
     rtmp_test.cpp
+    thread_test.cpp
 )
 # The tests call ST directly. They only take its header: a static libcoco brings libst.a
 # along, and a shared one contains it, so linking st here would make a second scheduler.
@@ -95,7 +96,7 @@ set(COCO_TEST_CASES
     HttpClientRejectsBadUrls
     HttpHelpers
     RuntimeInitIsIdempotent
-    RuntimeRejectsOtherThread
+    RuntimeOnEveryThread
     RuntimeShutdownWakesWaiters
     RuntimeSignalWakesWaiter
     TcpServerListenAndServeBlocksUntilStop
@@ -115,11 +116,28 @@ set(COCO_TEST_CASES
     RuntimeSignalStopsServerProcess
     RuntimeSecondSignalEndsStuckProcess
     RuntimeIgnoredSignalStaysIgnored
+    RuntimeSignalStopsThreadedServerProcess
+    RuntimeOwnerCheckAbortsInDebug
     RtmpDigestKnownAnswer
     RtmpAmf0RoundTrip
     RtmpChunksRoundTrip
     RtmpUrlParse
     RtmpPublishAndPlay
+    ThreadsRunSideBySide
+    CocoThreadRunsPostedFunctions
+    CocoThreadStopInterruptsTasks
+    CocoThreadStopOnlySuspendsTheCaller
+    CocoThreadLifecycleErrors
+    CocoThreadConcurrentStops
+    CocoThreadShutdownInterruptsTasks
+    ShutdownFromPlainThreadWakesWaiter
+    TcpConnMovesToAnotherThread
+    TcpConnFromBadFdFails
+    TcpServerThreadsSpreadConnections
+    TcpServerThreadsServeTls
+    TcpServerThreadsStopOnShutdown
+    TcpServerThreadsNeedTcpListener
+    HttpServerThreads
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

@@ -158,6 +158,19 @@ cd examples/http-server
 
 启动日志里会有 `st_set_eventsys to kqueue`（macOS）或 `st_set_eventsys to epoll`（Linux）。
 
+`examples/threads/` 下的四个程序对照几种用法。每个都自己起服务器、自己当客户端，跑完自动退出，输出里每行标出所在的线程（T0 是主线程）：
+
+| 程序 | 用法 | 能看到什么 |
+| --- | --- | --- |
+| `threads_single` | 主线程 `CocoRun` | 三个各要 100ms 的回复一共约 100ms，全在 T0 |
+| `threads_server` | `TcpServerOptions::threads = 4` | T0 只 accept，8 个连接轮流分到 T1～T4 |
+| `threads_post` | `CocoThread::Post` | 300ms 计算放在主线程会让 tick 停 300ms，投递给 worker 后 tick 照常 |
+| `threads_plain` | `std::thread` + 各自 `CocoRun` | 两个线程各跑一个服务器，主线程一次 `CocoShutdown()` 把两个都停掉 |
+
+```bash
+./build/bin/threads_post
+```
+
 ## 排错
 
 **submodule 是空的。** `thirdparty/st` 或 `thirdparty/http-parser` 没有文件时，先执行 `git submodule update --init --recursive`。

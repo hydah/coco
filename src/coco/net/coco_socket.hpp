@@ -12,7 +12,7 @@
 namespace coco {
 
 // Owns an st_netfd_t: the fd is closed when the socket is destroyed. No coroutine may
-// still be blocked on it by then, or st_netfd_close fails.
+// still be blocked on it by then. It belongs to the runtime of the thread that created it.
 class CocoSocket : public IoReaderWriter {
  public:
     explicit CocoSocket(st_netfd_t stfd);
@@ -22,6 +22,9 @@ class CocoSocket : public IoReaderWriter {
     CocoSocket &operator=(const CocoSocket &) = delete;
 
     st_netfd_t get_stfd() { return stfd; }
+    // Gives up the fd without closing it and returns it, or -1 if there is none. Every
+    // call after it fails. No coroutine may be blocked on the socket.
+    int release();
     virtual bool is_never_timeout(int64_t timeout_us);
     virtual void set_recv_timeout(int64_t timeout_us);
     virtual int64_t get_recv_timeout();
@@ -42,11 +45,15 @@ class CocoSocket : public IoReaderWriter {
     virtual int sendmsg(ssize_t *nwrite, struct msghdr *msg, int flags);
 
  private:
+    // ERROR_SOCKET_CLOSED once the fd was released.
+    int check();
+
     int64_t recv_timeout;
     int64_t send_timeout;
     int64_t recv_bytes;
     int64_t send_bytes;
     st_netfd_t stfd;
+    OwnerThread owner_;
 };
 
 // Binds a socket of socktype (SOCK_STREAM or SOCK_DGRAM) to ip:port, which must be an IP

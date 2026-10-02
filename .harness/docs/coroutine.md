@@ -10,8 +10,9 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 - `src/coco/base/coroutine_mgr.hpp`、`src/coco/base/coroutine_mgr.cpp`：`ConnManager`
 - `src/coco/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
 - `src/coco/server/coco_tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
+- `src/coco/base/coco_thread.hpp`、`src/coco/base/coco_thread.cpp`：`CocoThread`；`src/coco/base/shutdown.cpp`：跨线程的退出请求
 - `thirdparty/st`：调度、事件系统和上下文切换
-- `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试
+- `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp`、`tests/lifecycle_test.cpp`：下文每条生命周期规则对应的测试；`tests/thread_test.cpp`：多线程
 
 ## 一个线程，多段栈
 
@@ -21,9 +22,7 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 2. `st_set_eventsys(ST_EVENTSYS_ALT)`，选 ST 在该平台上的高性能事件系统。
 3. `st_init()`。调用 `st_init()` 的那条线程从此就是主协程，之后的 `st_thread_create` 都挂在这条线程上。
 
-因此这是 1:N，不是每个协程一个内核线程，也没有把协程再分发到线程池。
-
-ST 的调度器状态是 `__thread` 的，本可以每个线程一份，但 coco 自己的状态是整个进程共用的：协程 ID 表（`CoroutineContext`）、`st_key_create` 得到的键、退出请求和 `CocoRun` 的标志。所以运行时属于第一个调用 `CocoInit()` 的线程，记在一个原子的 `std::thread::id` 里（用 compare-exchange 抢，两个线程同时调用也只有一个成功）。别的线程上 `CocoInit()` 返回 `ERROR_ST_WRONG_THREAD`，靠它初始化的入口也都跟着失败；`CocoGetCoroutineID()` 返回 0，`CocoShouldStop()` 返回 false，不去碰共享状态（日志头里会调 `CocoGetCoroutineID()`，所以报错的那条日志本身也是安全的）。进程要吃满多核，需要多进程。
+因此一个线程上是 1:N，不是每个协程一个内核线程。每个用到 coco 的线程各有一份这样的运行时，见下面的“多线程”一节。
 
 每个协程有自己的栈。`CoCoroutine` 把 `stack_size` 传给 `st_thread_create`，`0` 表示用 ST 的默认大小（64KB）。上下文保存在 `jmp_buf` 形态的缓冲区里；macOS 上由 `thirdparty/st/md.S` 的 `_st_md_cxt_save` / `_st_md_cxt_restore` 保存被调用者保存寄存器和栈指针，因为系统 `setjmp` 会混淆这些值。
 
@@ -43,7 +42,7 @@ ST 的调度器状态是 `__thread` 的，本可以每个线程一份，但 coco
 
 主协程如果在 `main` 里空转而不让出，其他协程得不到运行，`main` 返回则进程直接结束。所以主协程要挂起在某个让出的调用上：服务端程序调用阻塞的 `ListenAndServe`，或者 `Start` 之后调用 `CocoWaitForShutdown()`。两者都停在条件变量上，直到 `SIGINT` / `SIGTERM` 或某条协程调用 `CocoShutdown()`；`ListenAndServe` 醒来后先 `Stop()`，等所有连接退出再返回。`CocoLoopMs()` 已废弃，现在等同于 `CocoWaitForShutdown()`。
 
-信号只在第一次等待（或 `CocoRun`）时接管。第一个 `SIGINT` / `SIGTERM` 请求退出并把信号还给原来的处理方式，第二个信号按默认动作直接结束进程；这个计数放在信号处理函数里，所以某段代码一直不让出协程、watcher 协程跑不起来时也有效。启动时被忽略的信号（shell 里后台作业的 `SIGINT`）保持忽略。
+信号只在第一次等待（或 `CocoRun`）时接管。第一个 `SIGINT` / `SIGTERM` 请求退出并把信号还给原来的处理方式，第二个信号按默认动作直接结束进程。信号处理函数只往一个 pipe 写一个字节；读它的是一条普通的内核线程（不是协程），它把信号还回去再调用 `CocoShutdown()`，所以某段代码一直不让出协程时，第一个信号照样被处理，第二个照样能结束进程。处理函数里另有一个计数兜底，以防这条线程还没来得及运行。启动时被忽略的信号（shell 里后台作业的 `SIGINT`）保持忽略。
 
 自己写主循环（不是服务端）时，用 `CocoRun(fn)`：它在主协程上直接调用 `fn`，用进程自己的栈，并在 `fn` 运行期间把退出请求变成对主协程的一次中断，同时让 `CocoShouldStop()` 在主协程上返回 true。被中断的只是正在进行的那一次阻塞调用，之后的调用照常工作，所以循环要检查 `CocoShouldStop()`。主协程不是 `CoCoroutine`，没有 `trd_err_`，`CocoShouldStop()` 对它读的是 `CocoRun` 记下的标志。
 
@@ -105,7 +104,7 @@ coroutine_fun(p):
 - **释放**：只由连接自己的协程在入口函数末尾完成。
 - **停止**：`ConnRoutine::Stop()` 只调用 `interrupt()`。之后的第一次阻塞调用返回 `EINTR`，`ShouldTermCycle()` 变为真，`DoCycle()` 返回，连接随即释放自己。
 
-析构的顺序也就固定下来：派生类析构函数运行时，`DoCycle()` 一定已经返回。不会再出现“派生类先释放了 socket，基类才去中断还阻塞在这个 socket 上的协程”。kqueue 版 ST 在 fd 上仍有等待者时，`st_netfd_close` 会失败，关闭 fd 处的断言（现在在 `CocoSocket` 析构里）以前就是这样被触发的。
+析构的顺序也就固定下来：派生类析构函数运行时，`DoCycle()` 一定已经返回。不会再出现“派生类先释放了 socket，基类才去中断还阻塞在这个 socket 上的协程”。kqueue 版 ST 在 fd 上仍有等待者时 `st_netfd_close` 会失败，以前关闭 fd 处的断言就是这样被触发的。现在 `CocoSocket` 用 `CloseNetfd` 关闭（原因见 [State Threads](st.md) 的“多线程”一节），不再检查等待者，这条规则就只能靠上面的顺序保证。
 
 由此得到三条规则：
 
@@ -144,3 +143,27 @@ while (!名单为空)
 需要自己控制 accept 或连接对象时，再继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`，循环条件里加上 `ShouldTermCycle()`。`Shutdown` 和监听协程的 `Stop()` 同样要等 `DoCycle()` 返回。
 
 继承 `ListenRoutine` 的类，要在自己的析构函数开头调用 `Stop()`。基类析构函数运行时，派生类的成员已经释放了，在那里停协程为时已晚。`TcpServer` 内部的监听协程也是这样做的。
+
+## 多线程
+
+ST 的调度器状态都是 `__thread` 的，每个线程 `st_init()` 一次就有一套互不相干的调度器。coco 跟着做：每个用到它的线程各有一份运行时，第一次用到时自动初始化。下面这些因此都是每线程一份（`thread_local`）：初始化标志、`st_key_create` 得到的键（ST 的键表本来就是每线程的）、协程 ID 表 `CoroutineContext`、等待者用的条件变量、`CocoRun` 的主协程和停止标志、`HttpDefaultClient()`、HTTP `Date` 头的缓存、WebSocket 掩码用的 `random_device`。协程 ID 的计数器是全进程共用的原子变量，所以同一个 ID 在整个进程的日志里只指一条协程。
+
+线程之间的规则：
+
+- 协程、socket、连接管理器、服务器、`CocoThread` 都属于创建它的线程。它们带一个 `OwnerThread`，不带 `NDEBUG` 的构建里被别的线程使用时直接断言失败；正式构建不检查。
+- 能跨线程的只有三样：投递给 `CocoThread` 的函数、`TcpConn::Release()` 交出的裸 fd（另一个线程用 `TcpConnFromFd()` 包回来）、整个进程级别的 `CocoShutdown()` / `CocoShutdownRequested()`。创建好的 `TlsConfig` 也可以共享，`SSL_CTX` 本身支持多线程。
+- 用户自己共享数据时自己加锁。pthread 锁一旦等待，挡住的是整个线程上的协程，临界区要短。
+
+**退出请求**是全进程的：标志和触发它的信号都是原子变量。每个线程初始化运行时的时候（`StartThreadShutdown()`）建一个唤醒 pipe，把写端登记到一张全局表里，并起一条协程守着读端。`CocoShutdown()` 可以在任何线程上调用，包括没有运行时的线程：它先置位标志；如果本线程有运行时，就在本线程直接做“本地那一半”（中断本线程 `CocoRun` 的主体、调用本线程的关停钩子、唤醒本线程的等待者），这和以前一样是同步完成的；然后往其他线程的 pipe 各写一个字节，那些线程的守护协程醒来后各自做本地那一半。线程退出时，一个 `thread_local` 对象的析构函数把它的写端从表里摘掉。信号处理不变，只是读信号 pipe 的从协程换成了一条普通内核线程，它调用的 `CocoShutdown()` 会把请求送到每一个线程。
+
+**`CocoThread`** 是一条跑着自己运行时的内核线程：
+
+- `Start()` 起线程，在新线程上 `CocoInit()`，把结果通过 `std::promise` 交回来；调用方只阻塞这么一小会儿。
+- `Post(fn)` 在任何线程都能调，从不阻塞：加锁把 `fn` 放进队列，计数加一，往唤醒 pipe 写一个字节（非阻塞，pipe 满了说明已经有唤醒在排队）。
+- worker 的主协程循环：取出整个队列，每个函数起一条 detached 协程（`Task`，和 `ConnRoutine` 一样在自己的栈上释放自己，从 worker 的名单里摘掉自己、计数减一），然后在唤醒 pipe 上让出。
+- `Stop()` 先在锁里置 `closed`（之后 `Post` 返回 `ERROR_THREAD_DISPOSED`）再唤醒 worker。worker 把队列里剩下的函数也起起来，然后中断名单上所有的 `Task`，等名单变空，最后往 done pipe 写一个字节后返回。`Stop()` 的调用方在 done pipe 上让出，而不是直接 `pthread_join` 卡住整个线程，所以同一线程上的其他协程照常运行；等到之后再 join，这时会立即返回。两个协程同时 `Stop()`，后到的用 `WaitUntilNotified` 等先到的。
+- 收到退出请求时，worker 线程的守护协程调用关停钩子，中断当时还在跑的 `Task`；线程本身一直运行到 `Stop()`。
+
+**`TcpServerOptions::threads` 大于 1** 时，`TcpServer` 起这么多个 `CocoThread`。监听协程用 `TcpListener::AcceptTcp()` 拿到连接，挑 `Load()` 最小的 worker，`Release()` 出 fd，投递一个函数过去；worker 上用 `TcpConnFromFd()` 包回来，配置了证书就再包一层 `TlsConn`（TLS 会话不能换线程，所以监听器不再包 `TlsListener`），设好超时后直接在这个 `Task` 上调用处理函数。fd 在路上时由一个小对象持有：worker 拿走了就不管，否则（worker 正在停、协程起不来）在析构时关闭。`Stop()` 先停监听协程、关闭监听 socket，再依次 `Stop()` 每个 worker；`ConnCount()` 是所有 worker 的 `Load()` 之和。只有 `TcpListener` 的连接能交接 fd，所以传别的 `StreamListener` 给 `Serve` 时返回 `ERROR_SYSTEM_CONFIG_INVALID`。`HttpServer` 通过 `HttpServeOptions::threads` 传进来；`RtmpServer` 不开，推流和拉流要在同一个线程上才能转发。
+
+**已知的代价**：ST 没有销毁调度器的接口，线程退出时它的事件系统 fd（epoll / kqueue）和空闲协程的栈不会释放。每个 `CocoThread` 在进程结束前占着一个 fd 和少量内存，所以 worker 应该长期存在，不要反复创建。

@@ -4,6 +4,22 @@
 
 本机 Docker 由 colima 提供，架构是 aarch64。容器名和镜像标签都带上架构，例如容器 `coco-linux-amd64`、`coco-linux-arm64`，镜像 `coco-linux:amd64`、`coco-linux:arm64`。这样不同架构可以同时跑，也不会占用已有容器的名字，更不会把 `ubuntu:24.04` 这种已有标签换到另一份镜像上。测完删掉自己起的容器和自己打的标签。
 
+## 脚本
+
+下面每一项都由 `.harness/scripts/` 里的脚本做完，结尾打印一份汇总，有失败时退出码非零：
+
+```bash
+.harness/scripts/test-local.sh --asan --tsan   # 本机：四种组合 + 单进程 + 安装验证 + ASan + TSan
+.harness/scripts/test-linux.sh                 # 两个架构的容器里各跑一遍 test-local.sh
+```
+
+- `test-local.sh` 的构建目录默认在 `build/matrix/`（已被 `.gitignore` 忽略），可以用 `BUILD_ROOT` 改；`JOBS` 是并发数；遇到编译器段错误时自动重试，最多 `RETRIES` 次（默认 30）。`--asan`、`--tsan` 不加就不跑。
+- `test-linux.sh [--keep] [amd64] [arm64]`：容器名是 `coco-linux-<arch>`，基础镜像按 digest 拉，不打任何标签。已经在跑的同名容器会被复用，连同里面的构建目录，第二次只重编改过的部分；加 `--keep` 跑完保留容器，否则结束时删掉。每个架构的完整日志在 `$TMPDIR/coco-linux-<arch>.log`，传给 `test-local.sh` 的参数放在 `TEST_ARGS` 里（例如 `TEST_ARGS=--asan`）。
+- 安装验证用的小程序在 `.harness/scripts/consumer/`。
+- `.harness/` 在 `.gitignore` 里，新加的文件要 `git add -f`。
+
+脚本只是把下面的要求自动化，要求本身以这份文档为准；改了要求，同步改脚本。
+
 ## 要覆盖的环境
 
 | 环境 | 怎么跑 | 期望 |
@@ -39,9 +55,21 @@
    cd build-asan && ASAN_OPTIONS=detect_stack_use_after_return=0 ctest --output-on-failure
    ```
 
+5. 改了线程、退出或 socket 的生命周期时，在本机再跑一次 ThreadSanitizer，日志里不能有 `WARNING: ThreadSanitizer`。它能看懂 ST 的协程切换，没有误报；跨线程交接 netfd 的竞争就是它抓到的。
+
+   ```bash
+   cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOCO_BUILD_EXAMPLES=OFF \
+     -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread \
+     -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+   cmake --build build-tsan -j --target coco_tests
+   cd build-tsan && ctest --output-on-failure 2>&1 | tee ctest.log; grep -c "WARNING: ThreadSanitizer" ctest.log
+   ```
+
+   `RuntimeSecondSignalEndsStuckProcess` 在 TSan 下必然失败：TSan 把异步信号推迟到线程下一次进入它拦截的函数，而这个用例的进程正是一直空转、从不调用任何函数，两个信号都送不到。改动前的代码同样如此，不算回归。
+
 ## 容器里的注意点
 
-- **x86_64 是用 QEMU 模拟的**，`cc1` 会随机段错误（`internal compiler error: Segmentation fault`）。构建失败时看是不是这种崩溃：是的话直接重试，`cmake --build` 会从断点续编；重试数次仍失败才算真正的编译错误。
+- **x86_64 是用 QEMU 模拟的**，编译器会随机段错误（`internal compiler error: Segmentation fault`，编自带 OpenSSL 时也可能只打出 `Segmentation fault`）。`cmake --build` 会从断点续编，所以直接重试即可；一次完整构建重试十几次也属正常，并发调低（`JOBS=2`，`test-linux.sh` 在非 x86_64 主机上会自动这样做）能少崩一些。只有报出的错误不是段错误时，才算真正的编译错误。
 - 用例监听 `127.0.0.1` 上的固定端口。本机不要同时跑两套测试；容器有自己的网络命名空间，和本机一起跑没问题。
 - 两个架构的容器名不同，可以同时跑。测完删掉这两个容器和为它们打的镜像标签。
 

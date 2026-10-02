@@ -23,6 +23,10 @@ struct HttpServeOptions {
     // A request body the handler left unread is skipped up to this size to keep the
     // connection; a longer one closes it.
     int64_t max_drain_bytes = 256 * 1024;
+    // Only for HttpServer: above 1, connections are served on this many worker threads,
+    // see TcpServerOptions::threads. The handler is then called on several threads at
+    // once.
+    int threads = 0;
 };
 
 // Serves HTTP/1.1 requests on conn with handler until the peer closes, a response ends
@@ -108,8 +112,9 @@ class HttpClient {
     std::shared_ptr<HttpConnPool> pool_;
 };
 
-// A client shared by HttpGet and HttpPost, like Go's http.DefaultClient. Call
-// SetTlsDialer on it to enable https.
+// A client shared by HttpGet and HttpPost, like Go's http.DefaultClient. Each thread has
+// its own, since pooled connections cannot change threads. Call SetTlsDialer on it to
+// enable https.
 HttpClient &HttpDefaultClient();
 int HttpGet(const std::string &url, std::unique_ptr<HttpResponse> *resp);
 int HttpPost(const std::string &url, const std::string &content_type, const std::string &body,

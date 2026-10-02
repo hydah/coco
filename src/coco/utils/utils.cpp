@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include <map>
+#include <mutex>
 
 #include "coco/common/error.hpp"
 #include "coco/log/log.hpp"
@@ -101,9 +102,9 @@ void retrieve_local_ipv4_ips() {
 }
 
 std::vector<std::string> &get_local_ipv4_ips() {
-    if (_system_ipv4_ips.empty()) {
-        retrieve_local_ipv4_ips();
-    }
+    // Several threads may ask at once; the list is read only once it is filled.
+    static std::once_flag once;
+    std::call_once(once, retrieve_local_ipv4_ips);
 
     return _system_ipv4_ips;
 }

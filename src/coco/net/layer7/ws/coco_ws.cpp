@@ -20,7 +20,7 @@ namespace coco {
 
 // RFC 6455 4.1: a random 16-byte nonce, base64 encoded, chosen anew for each connection.
 static std::string NewWebSocketKey() {
-    static std::random_device rd;
+    static thread_local std::random_device rd;
     unsigned char nonce[16];
     for (int i = 0; i < 16; i += 4) {
         uint32_t v = rd();

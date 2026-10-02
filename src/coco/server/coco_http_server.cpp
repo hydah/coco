@@ -84,6 +84,7 @@ int HttpServer::StartOn(std::unique_ptr<StreamListener> l, const std::string &cr
     opt.send_timeout_us = options_.write_timeout_us;
     opt.tls_crt_file = crt_file;
     opt.tls_key_file = key_file;
+    opt.threads = options_.threads;
 
     HttpHandler *handler = handler_;
     HttpServeOptions options = options_;

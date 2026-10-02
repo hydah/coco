@@ -34,7 +34,7 @@ static bool IsControl(int opcode) { return (opcode & 0x08) != 0; }
 
 WebSocketHeader::WebSocketHeader() : _mask(4) {
     // The key must be unpredictable to intermediaries, so it comes from the OS entropy.
-    static std::random_device rd;
+    static thread_local std::random_device rd;
     uint32_t key = rd();
     for (int i = 0; i < 4; ++i) {
         _mask[i] = (uint8_t)(key >> (8 * i));

@@ -20,12 +20,16 @@ int DialUdp(const std::string &host, int port, int64_t timeout_us, std::unique_p
 
 int ListenTcp(const std::string &local_ip, int local_port, std::unique_ptr<TcpListener> *l);
 int DialTcp(const std::string &host, int port, int64_t timeout_us, std::unique_ptr<TcpConn> *conn);
+// Takes ownership of fd, a connected TCP socket, on the calling thread's runtime; it is
+// closed if that fails. With TcpConn::Release() it moves a connection to another thread.
+int TcpConnFromFd(int fd, std::unique_ptr<TcpConn> *conn);
 
-// Sets up the coroutine runtime on the calling thread; later calls do nothing. A program
+// Sets up the coroutine runtime of the calling thread; later calls do nothing. A program
 // normally starts with CocoRun(), which does this. Calling it is optional, the first
 // function that needs the runtime does it, but calling it first reports a failure up
-// front. The runtime and everything coco creates belong to that thread: from any other
-// thread, CocoInit() and every call that needs the runtime return ERROR_ST_WRONG_THREAD.
+// front. Every thread that uses coco has a runtime of its own, and what coco creates
+// belongs to the thread that created it: only a released fd (TcpConn::Release()) and a
+// function posted to a CocoThread move between threads.
 int CocoInit();
 int CocoGetCoroutineID();
 void CocoSleepMs(uint64_t durms);
@@ -46,8 +50,9 @@ bool CocoShouldStop();
 // armed, as for a background job, stays ignored.
 int CocoWaitForShutdown();
 // Wakes every CocoWaitForShutdown() and every blocking Serve or ListenAndServe, which
-// then stop their server, and stops the function of a running CocoRun(). Never blocks, so
-// a connection handler may call it; it is not async-signal-safe.
+// then stop their server, and stops the function of a running CocoRun(), on every thread.
+// It may be called from any thread, one without a runtime included. Never blocks, so a
+// connection handler may call it; it is not async-signal-safe.
 void CocoShutdown();
 bool CocoShutdownRequested();
 
@@ -59,8 +64,9 @@ bool CocoShutdownRequested();
 // server and returns COCO_SUCCESS. Only the blocking call in progress fails, later ones
 // work, so a loop checks CocoShouldStop().
 //
-// fn runs on the calling coroutine, the main one, with the stack of the process. A second
-// CocoRun() inside fn, or on another coroutine, returns ERROR_THREAD_STARTED.
+// fn runs on the calling coroutine, the main one, with the stack of the thread. A second
+// CocoRun() inside fn, or on another coroutine of the same thread, returns
+// ERROR_THREAD_STARTED.
 //
 //   int main() {
 //       return CocoRun([]() {

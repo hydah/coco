@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -13,7 +14,8 @@ namespace cotest {
 typedef std::function<void()> TestFn;
 
 std::map<std::string, TestFn> &Registry();
-int &Failures();
+// CHECK may fail on any thread.
+std::atomic<int> &Failures();
 
 struct Register {
     Register(const char *name, TestFn fn) { Registry()[name] = fn; }

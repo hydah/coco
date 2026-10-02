@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.10)
+project(coco_consumer CXX)
+set(CMAKE_CXX_STANDARD 11)
+find_package(coco REQUIRED)
+add_executable(consumer main.cpp)
+target_link_libraries(consumer coco::coco)

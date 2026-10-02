@@ -26,7 +26,10 @@ int main() {
             w.Write("{\"path\":\"" + r.path + "\",\"q\":\"" + r.Query().Get("q") + "\"}\n");
         });
 
-        HttpServer server(&mux);
+        // The handlers share nothing, so connections may run on four worker threads.
+        HttpServeOptions opt;
+        opt.threads = 4;
+        HttpServer server(&mux, opt);
         // Serves until SIGINT or SIGTERM, then closes every connection and returns.
         if (server.ListenAndServeTLS("0.0.0.0", 9082, "./server.crt", "./server.key") !=
             COCO_SUCCESS) {

@@ -66,7 +66,7 @@ int main() {
 
 A program starts with `return CocoRun([]() { ... });` and makes every coco call inside it. `CocoRun` sets up ST on the calling thread, returns the error code right away if that fails, and makes the body of the program stoppable with Ctrl-C (see the next section). Without `CocoRun` things still work: the first call that needs a coroutine or a socket sets up ST, and `CocoInit()` checks the setup on its own if you want that.
 
-The runtime belongs to the thread that set it up, and so does everything coco creates. On any other thread, `CocoInit()`, `CocoRun()` and every call that needs the runtime return `ERROR_ST_WRONG_THREAD` instead of setting up a second runtime there.
+Every thread that uses coco has a runtime of its own, set up on first use. What coco creates may only be used on the thread that created it; the "Threads" section below shows how several threads work together.
 
 `ListenAndServe` / `ListenAndServeTLS` / `Serve` block until `Stop()` or a shutdown request (`SIGINT`, `SIGTERM` or `CocoShutdown()`). Before returning they close the listening port and wait for every connection to exit, so `main` can simply return. To run several servers, or do other work besides serving:
 
@@ -100,6 +100,39 @@ int main() {
 ```
 
 `fn` runs on the main coroutine, on the process's own stack rather than a 64KB coroutine stack. Only the blocking call in progress fails; later ones work, so the loop has to check `CocoShouldStop()`. The two pingpong clients in `examples/pingpong` are written this way.
+
+### Threads
+
+All coroutines of one thread share one core. The simplest way to use more is to let a server hand its connections to worker threads:
+
+```cpp
+TcpServerOptions opt;
+opt.threads = 4;                 // this thread only accepts; each connection goes to the worker with the fewest
+TcpServer server(Echo, opt);     // HttpServer takes HttpServeOptions::threads
+return server.ListenAndServe("0.0.0.0", 8080);
+```
+
+The handler is then called on several threads at once, so whatever it shares must be safe to use from all of them (a lock or an atomic). A pthread lock that waits holds up every coroutine of its thread, so keep critical sections short. TLS is set in the options as usual; the workers handshake themselves. `Stop()` and a shutdown request make each worker interrupt its connections, wait for them and end. `RtmpServer` is single-threaded for now: a publisher and its players have to be on one thread to relay.
+
+`CocoThread` is the building block, a kernel thread with a runtime of its own:
+
+```cpp
+CocoThread worker;
+worker.Start();
+worker.Post([]() { /* runs on a new coroutine on the worker, and may block on I/O */ });
+worker.Stop();                   // interrupts what still runs, waits for it, joins the thread
+```
+
+`Post()` may be called from any thread and never blocks; everything else only on the thread that created the object. Like a server's handler, a posted function has to end when it is interrupted (a blocking call fails once and `CocoShouldStop()` turns true): `Stop()` interrupts it, and so does a shutdown request, while the thread itself runs until `Stop()`. `Stop()` only suspends the calling coroutine; the other coroutines of its thread keep running.
+
+Only two things move between threads:
+
+- **Functions**, through `CocoThread::Post()`.
+- **Raw fds**: `TcpConn::Release()` gives up the fd without closing it, and another thread wraps it into its own runtime with `TcpConnFromFd()`. A TLS session cannot change threads, so wrap the `TlsConn` after the move.
+
+Which to use: `CocoRun` for work on one thread; the `threads` option for a server on several cores; `CocoThread` to hand tasks or connections to another thread; plain `std::thread`s, each with its own `CocoRun`, for threads that share nothing. `threads_single`, `threads_server`, `threads_post` and `threads_plain` in `examples/threads/` show the four, printing the thread each step runs on.
+
+`CocoShutdown()` and `CocoShutdownRequested()` are process-wide: any thread may call them, one coco knows nothing about included, and every thread's waiters and `CocoRun` get the request. Apart from that, connections, listeners, servers, `HttpClient` and `WebSocketClient` must stay on their thread; a build without `NDEBUG` aborts when a coroutine, a socket or a `CocoThread` is used from another one. The default client of `HttpGet` / `HttpPost` is one per thread.
 
 ### HTTP / HTTPS server
 
@@ -264,7 +297,7 @@ The default is a static `libcoco.a`. The `libst.a`, `libssl.a` and `libcrypto.a`
 ## Architecture
 
 ```text
-server     TcpServer, HttpServer                    accept loop + optional TLS + protocol handler
+server     TcpServer, HttpServer                    accept loop + optional TLS + optional worker threads + protocol handler
 layer7  |  HTTP, WebSocket, RTMP                    depends only on StreamConn / StreamDialer
 tls     |  TlsConn, TlsListener, TlsDialer          wraps one StreamConn into another
 layer4     StreamConn etc. interfaces; TcpConn, UdpConn   st_read / st_write / st_accept
@@ -278,8 +311,8 @@ Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`
 ```text
 src/coco/
 ├── coco.h           umbrella header
-├── coco_api.h       CocoInit, CocoWaitForShutdown / CocoShutdown, ListenTcp / DialTcp, ListenUdp / DialUdp, CocoSleepMs, CocoShouldStop
-├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager; shutdown and signals
+├── coco_api.h       CocoInit, CocoRun, CocoWaitForShutdown / CocoShutdown, ListenTcp / DialTcp / TcpConnFromFd, ListenUdp / DialUdp, CocoSleepMs, CocoShouldStop
+├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager; CocoThread; shutdown and signals
 ├── common/          error codes
 ├── log/             logging
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
@@ -325,7 +358,7 @@ Linux ARM64 does not build at the moment: in the bundled State Threads (`thirdpa
 ## Limitations
 
 - Single-threaded: ST runs on the thread that set it up (the first one to call into coco), and coco objects must not cross threads; use multiple processes to use multiple cores.
-- TLS does not verify the peer certificate (`SSL_VERIFY_NONE`).
+- TLS does not verify the peer certificate unless the client config calls `TlsConfig::EnablePeerVerification()` (default CA store). `TlsDialer` sends SNI, and checks the hostname when verification is on.
 - No HTTP/2.
 - A WebSocket message is capped at 4MB (`MAX_WS_PACKET`).
 - An RTMP message is capped at 16777215 bytes (`kRtmpMaxMessage`). No RTMPE, and aggregate messages are not unpacked.

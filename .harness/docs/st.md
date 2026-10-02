@@ -224,8 +224,8 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 `delete handler` 触发的析构顺序：
 
 ```text
-~Session()           释放 conn_ → CocoSocket 析构 → st_netfd_close
-                      DoCycle 已经返回，fd 上没有协程在等，close 一定成功
+~Session()           释放 conn_ → CocoSocket 析构 → CloseNetfd
+                      DoCycle 已经返回，fd 上没有协程在等
 ~ConnRoutine()
   delete coroutine    ~CoCoroutine → stop()：trd_ 就是当前线程，只 interrupt（cycle_done 为真，无操作），不 join
   manager_->Remove()  从存活名单删除；名单变空时 broadcast
@@ -237,7 +237,7 @@ void *CoCoroutine::coroutine_fun(void *arg) {
 
 从外部停止一个连接，只需要调用 `ConnRoutine::Stop()`，也就是 `interrupt()`。连接的下一次 I/O 返回 `EINTR`，`ShouldTermCycle()` 变真，`DoCycle()` 返回，然后走上面同一条释放路径。外部永远不 `delete` 一个已经启动的连接。
 
-kqueue 版 ST 在 fd 上还有协程等待时，`st_netfd_close` 会失败，`CocoSocket` 析构里的断言会触发。以前连接由其他协程删除，派生类先关闭 socket，基类才去中断还阻塞在这个 socket 上的协程，就是这样出错的。
+kqueue 版 ST 在 fd 上还有协程等待时，`st_netfd_close` 会失败。以前连接由其他协程删除，派生类先关闭 socket，基类才去中断还阻塞在这个 socket 上的协程，就是这样出错的。现在 `CocoSocket` 用 `CloseNetfd()` 关闭，不再做这个检查（原因见下面“多线程下 ST 的两个坑”），所以这个顺序更不能乱。
 
 ### 监听协程：调用方停止、调用方释放
 
@@ -336,6 +336,14 @@ sequenceDiagram
 - `DoCycle()` 和 `TcpServer` 的处理函数都必须响应中断。中断标志只生效一次，`CoCoroutine::interrupted` 也只允许中断一次。拿到 `EINTR` 以后如果忽略它再去读，就会一直阻塞，`Shutdown()` 也会跟着一直等。循环条件里加上 `ShouldTermCycle()`（处理函数里用 `CocoShouldStop()`），出错就返回。
 - 不能在某条连接里调用管理它的那个 manager 的 `Shutdown()`，也不能在连接里 `delete` 这个 manager：它会等所有连接退出，其中包括它自己。
 - `CoroutineContext` 用全局的 `std::map<st_thread_t, int>` 存协程 ID，每次查询都查一次 map。`CocoShouldStop()` 已经改用 ST 自带的 `st_key_create` / `st_thread_setspecific`，协程 ID 还没有换过去。
-- 一个进程只有一份 ST，跑在初始化它的那条内核线程上（`CocoRun()` / `CocoInit()`，或第一次建协程、建 socket、`CocoSleepMs` 时自动初始化）。coco 的全局状态不能跨线程共用，所以别的线程上的调用返回 `ERROR_ST_WRONG_THREAD`，不会再 `st_init()` 一份。要用满多核需要多进程；所有对象都不能跨线程使用。
+- 每个用到 coco 的线程各有一份 ST，跑在初始化它的那条内核线程上（`CocoRun()` / `CocoInit()`，或第一次建协程、建 socket、`CocoSleepMs` 时自动初始化）。对象都不能跨线程使用，只有裸 fd 和投递给 `CocoThread` 的函数能在线程之间交接，见 [协程与连接管理](coroutine.md) 的“多线程”一节。
+- 线程退出时，ST 的调度器不会被销毁：事件系统的 fd 和空闲协程的栈一直留到进程结束。
+
+## 多线程下 ST 的两个坑
+
+本仓库用的 ST 是改过的 fork（`hydah/state-threads`）：调度器、事件系统、空闲栈、线程私有键都是 `__thread`，`_st_io_init` 用 `pthread_once`，只有 netfd 的空闲链表是全进程共用的，用一把互斥锁保护。
+
+1. **`st_netfd_close` 有竞争。** 它先调 `st_netfd_free` 把 netfd 结构放回共用的空闲链表，然后才读 `fd->osfd` 去 `close`。这中间另一个线程可能已经从链表里取走这个结构、写进了自己新打开的 fd，这边就会把别人的 fd 关掉。ThreadSanitizer 在 `TcpServerThreadsServeTls` 和 `TcpServerThreadsStopOnShutdown` 上抓到过这条竞争。coco 因此不调 `st_netfd_close`，统一用 `CloseNetfd()`：先取出 osfd，再 `st_netfd_free`，再 `close`。代价是少了 `st_netfd_close` 里对等待者的检查（各事件系统的 `fd_close` 只做这个检查，有协程还在等时返回 `EBUSY`），这条只能靠调用方保证。根本的修法是在 ST 里先保存 `osfd` 再释放，需要改子模块。
+2. **释放 netfd 不关闭 fd 用 `st_netfd_free`。** `TcpConn::Release()` 先取 fd 再 `st_netfd_free`，fd 本身保持非阻塞，到另一个线程上 `st_netfd_open_socket` 再包一次。epoll 版 ST 在最后一个等待者离开时就同步删掉了关注；kqueue 版把删除放进下一次 `kevent` 的变更列表，作用在原线程自己的 kqueue 上，不影响新线程。前提同样是没有协程阻塞在这个 fd 上。
 
 对应的测试在 `tests/coroutine_test.cpp`、`tests/tcp_server_test.cpp` 和 `tests/lifecycle_test.cpp`，跑法见 [构建](build.md) 的“测试”一节。

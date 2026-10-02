@@ -15,6 +15,7 @@
 
 #include "st.h"
 
+#include "coco/base/coco_thread.hpp"
 #include "coco/base/shutdown.hpp"
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
@@ -141,40 +142,27 @@ COTEST(RuntimeInitIsIdempotent) {
     CHECK_EQ(CocoInit(), COCO_SUCCESS);
 }
 
-// The runtime belongs to the thread that set it up. Another thread gets an error instead of
-// a second scheduler next to coco's shared state, from CocoInit() as from the calls that
-// would set the runtime up by themselves.
-COTEST(RuntimeRejectsOtherThread) {
+// Another thread sets up a runtime of its own on first use, by itself or through
+// CocoInit(), and its coroutine IDs do not repeat this thread's.
+COTEST(RuntimeOnEveryThread) {
     CHECK_EQ(CocoInit(), COCO_SUCCESS);
-    int init = -1, listen = -1, dial = -1, run = -1, id = -1;
-    bool stop = true;
-    bool ran = false;
+    int main_id = CocoGetCoroutineID();
+    int id_before = -1, init = -1, run = -1, id = -1;
     std::thread other([&]() {
-        init = CocoInit();
-        std::unique_ptr<TcpListener> l;
-        listen = ListenTcp(kLoopback, 0, &l);
-        std::unique_ptr<TcpConn> c;
-        dial = DialTcp(kLoopback, 1, kTimeoutUs, &c);
-        run = CocoRun([&]() {
-            ran = true;
-            return COCO_SUCCESS;
-        });
+        id_before = CocoGetCoroutineID();
         CocoSleepMs(1);
+        init = CocoInit();
+        run = CocoRun([]() { return 9; });
         id = CocoGetCoroutineID();
-        stop = CocoShouldStop();
     });
     other.join();
 
-    CHECK_EQ(init, ERROR_ST_WRONG_THREAD);
-    CHECK_EQ(listen, ERROR_ST_WRONG_THREAD);
-    CHECK_EQ(dial, ERROR_ST_WRONG_THREAD);
-    CHECK_EQ(run, ERROR_ST_WRONG_THREAD);
-    CHECK(!ran);
-    CHECK_EQ(id, 0);
-    CHECK(!stop);
-
-    CHECK_EQ(CocoInit(), COCO_SUCCESS);
-    CocoSleepMs(1);
+    CHECK_EQ(id_before, 0);
+    CHECK_EQ(init, COCO_SUCCESS);
+    CHECK_EQ(run, 9);
+    CHECK(id > 0);
+    CHECK(id != main_id);
+    CHECK_EQ(CocoGetCoroutineID(), main_id);
 }
 
 COTEST(RuntimeShutdownWakesWaiters) {
@@ -563,7 +551,72 @@ COTEST(RuntimeIgnoredSignalStaysIgnored) {
     sigaction(SIGINT, &old_int, nullptr);
 }
 
+// The same with worker threads: the signal lands on any thread, the server's thread still
+// stops the workers and their connections, and the process exits with status 0.
+COTEST(RuntimeSignalStopsThreadedServerProcess) {
+    const int port = 19276;
+    int out = -1;
+    pid_t pid = SpawnHelper("HelperServeThreadsUntilSignal", &out);
+    CHECK(pid > 0);
+    if (pid <= 0) {
+        return;
+    }
+    CHECK(WaitForReady(out));
+    close(out);
+
+    std::unique_ptr<TcpConn> a = Dial(port);
+    std::unique_ptr<TcpConn> b = Dial(port);
+    CHECK(a != nullptr && Echoes(a.get(), "a"));
+    CHECK(b != nullptr && Echoes(b.get(), "b"));
+
+    kill(pid, SIGTERM);
+    if (a) {
+        CHECK(PeerClosed(a.get()));
+    }
+    if (b) {
+        CHECK(PeerClosed(b.get()));
+    }
+    int status = 0;
+    CHECK(WaitForExit(pid, 3000, &status));
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+// A build with assertions stops a thread that uses another thread's object; a release
+// build does not check.
+COTEST(RuntimeOwnerCheckAbortsInDebug) {
+#ifndef NDEBUG
+    int out = -1;
+    pid_t pid = SpawnHelper("HelperUseOtherThreadsObject", &out);
+    CHECK(pid > 0);
+    if (pid <= 0) {
+        return;
+    }
+    close(out);
+    int status = 0;
+    CHECK(WaitForExit(pid, 3000, &status));
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+#endif
+}
+
 // The helper cases below run in a child process of the cases above; the runner skips them.
+COTEST(HelperServeThreadsUntilSignal) {
+    TcpServerOptions opt;
+    opt.threads = 2;
+    TcpServer server(Echo, opt);
+    if (server.Start(kLoopback, 19276) != COCO_SUCCESS) {
+        _exit(3);
+    }
+    fputs("ready\n", stdout);
+    fflush(stdout);
+    server.Wait();
+}
+
+COTEST(HelperUseOtherThreadsObject) {
+    CocoThread worker;
+    std::thread([&worker]() { worker.Stop(); }).join();
+    _exit(0);
+}
+
 COTEST(HelperServeUntilSignal) {
     TcpServer server(Echo);
     if (server.Start(kLoopback, 19273) != COCO_SUCCESS) {

@@ -66,7 +66,7 @@ int main() {
 
 程序用 `return CocoRun([]() { ... });` 开始，所有 coco 调用都写在里面。`CocoRun` 在调用它的线程上初始化 ST，失败时直接返回错误码，并让程序主体能被 Ctrl-C 打断（见下一节）。不用 `CocoRun` 也能工作：第一次用到协程或 socket 的调用会自动初始化，想单独检查初始化是否成功时可以先调 `CocoInit()`。
 
-运行时只属于初始化它的那条线程，coco 创建的所有对象也只能在这条线程上使用。在别的线程上调用 `CocoInit()`、`CocoRun()` 或任何需要运行时的函数，都会返回 `ERROR_ST_WRONG_THREAD`，不会在那条线程上再建一份运行时。
+每个用到 coco 的线程各有一份运行时，第一次用到时自动初始化。coco 创建的对象只能在创建它的那条线程上使用；怎么让多个线程一起干活，见后面的“多线程”一节。
 
 `ListenAndServe` / `ListenAndServeTLS` / `Serve` 会阻塞，直到 `Stop()` 或收到退出请求（`SIGINT`、`SIGTERM` 或 `CocoShutdown()`），返回前先关闭监听端口、等所有连接退出，所以 `main` 可以直接 `return`。同时跑多个服务，或者服务之外还有别的事要做时：
 
@@ -100,6 +100,39 @@ int main() {
 ```
 
 `fn` 就跑在主协程上，用的是进程自己的栈，不是 64KB 的协程栈。只有正在进行的那一次阻塞调用会失败，之后的调用照常工作，所以循环要自己检查 `CocoShouldStop()`。`examples/pingpong` 里的两个客户端就是这样写的。
+
+### 多线程
+
+一个线程上的所有协程只用一个核。要用满多核，最简单的是让服务器把连接分给几个 worker 线程：
+
+```cpp
+TcpServerOptions opt;
+opt.threads = 4;                 // 本线程只 accept，连接交给连接数最少的 worker
+TcpServer server(Echo, opt);     // HttpServer 用 HttpServeOptions::threads
+return server.ListenAndServe("0.0.0.0", 8080);
+```
+
+这时处理函数会在多个线程上同时被调用，它用到的共享数据要能跨线程使用（自己加锁或用原子变量）。注意 pthread 锁一旦等待，挡住的是那个线程上所有的协程，所以临界区要短。TLS 照常写在选项里，握手由 worker 自己做。`Stop()` 和退出请求会让各个 worker 中断自己的连接、等它们退出，再结束线程。`RtmpServer` 目前还是单线程：推流和拉流必须在同一个线程上才能转发。
+
+也可以直接用 `CocoThread`，它是一个跑着自己运行时的内核线程：
+
+```cpp
+CocoThread worker;
+worker.Start();
+worker.Post([]() { /* 在 worker 上的一个新协程里运行，可以阻塞在 I/O 上 */ });
+worker.Stop();                   // 中断还在跑的函数，等它们返回，再 join 线程
+```
+
+`Post()` 可以在任何线程上调用，从不阻塞。其他接口只能在创建它的线程上用。投递的函数和服务器的处理函数一样，被中断时要能结束（阻塞调用失败一次，`CocoShouldStop()` 变为 true）：`Stop()` 时会中断，收到退出请求时也会中断，线程本身则一直运行到 `Stop()`。`Stop()` 只挂起调用它的那个协程，同一线程上的其他协程照常运行。
+
+线程之间只交接两样东西：
+
+- **投递的函数**：`CocoThread::Post()`。
+- **裸 fd**：`TcpConn::Release()` 交出 fd 但不关闭它，另一个线程用 `TcpConnFromFd()` 在自己的运行时上包回来。TLS 会话不能换线程，要在交接之后再包 `TlsConn`。
+
+怎么选：只在一个线程里干活就用 `CocoRun`；服务器想用满多核，加 `threads` 选项；要把任务或连接交给别的线程，用 `CocoThread`；几个线程各干各的、互不派活，普通 `std::thread` 里各自 `CocoRun` 也行。`examples/threads/` 下的 `threads_single`、`threads_server`、`threads_post`、`threads_plain` 分别演示这四种，运行后输出里标出每一步在哪个线程。
+
+`CocoShutdown()` 和 `CocoShutdownRequested()` 是整个进程共用的，可以在任何线程（包括 coco 不知道的线程）上调用，所有线程上的等待者和 `CocoRun` 都会收到。除此以外，连接、监听、服务器、`HttpClient`、`WebSocketClient` 这些对象都不能跨线程使用；不带 `NDEBUG` 的构建里，跨线程使用协程、socket 或 `CocoThread` 会直接断言失败。`HttpGet` / `HttpPost` 用的默认客户端每个线程各一个。
 
 ### HTTP / HTTPS 服务
 
@@ -264,7 +297,7 @@ target_link_libraries(app PRIVATE coco::coco)
 ## 架构
 
 ```text
-server     TcpServer、HttpServer               accept 循环 + 可选 TLS + 协议处理函数
+server     TcpServer、HttpServer               accept 循环 + 可选 TLS + 可选 worker 线程 + 协议处理函数
 layer7  |  HTTP、WebSocket、RTMP               只依赖 StreamConn / StreamDialer
 tls     |  TlsConn、TlsListener、TlsDialer      把一个 StreamConn 包成另一个 StreamConn
 layer4     StreamConn 等接口；TcpConn、UdpConn  st_read / st_write / st_accept
@@ -278,8 +311,8 @@ core       协程、日志、错误码、工具             st_thread_create
 ```text
 src/coco/
 ├── coco.h           汇总头文件
-├── coco_api.h       CocoInit、CocoWaitForShutdown / CocoShutdown、ListenTcp / DialTcp、ListenUdp / DialUdp、CocoSleepMs、CocoShouldStop
-├── base/            协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager；退出与信号
+├── coco_api.h       CocoInit、CocoRun、CocoWaitForShutdown / CocoShutdown、ListenTcp / DialTcp / TcpConnFromFd、ListenUdp / DialUdp、CocoSleepMs、CocoShouldStop
+├── base/            协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager；CocoThread；退出与信号
 ├── common/          错误码
 ├── log/             日志
 ├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5
@@ -323,7 +356,7 @@ Linux ARM64 目前不能编译：自带的 State Threads（`thirdparty/st`）的
 ## 限制
 
 - 单线程：ST 跑在初始化它的线程上（第一次调用 coco 的线程），coco 的对象都不能跨线程使用；要用多核需要多进程。
-- TLS 不校验对端证书（`SSL_VERIFY_NONE`）。
+- TLS 默认不校验对端证书（`SSL_VERIFY_NONE`）。客户端配置可调用 `TlsConfig::EnablePeerVerification()`，按默认 CA 校验证书；`TlsDialer` 会发送 SNI，并在开启校验时核对主机名。
 - 不支持 HTTP/2。
 - WebSocket 单条消息上限 4MB（`MAX_WS_PACKET`）。
 - RTMP 单条消息上限 16777215 字节（`kRtmpMaxMessage`）。没有 RTMPE，也不拆 aggregate 消息。

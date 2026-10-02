@@ -15,8 +15,8 @@ std::map<std::string, TestFn> &Registry() {
     return cases;
 }
 
-int &Failures() {
-    static int failures = 0;
+std::atomic<int> &Failures() {
+    static std::atomic<int> failures(0);
     return failures;
 }
 

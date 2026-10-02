@@ -7,6 +7,7 @@
 #include "coco/base/st_fwd.hpp"
 
 #include "coco/base/coroutine_mgr.hpp"
+#include "coco/base/owner_thread.hpp"
 #include "coco/common/error.hpp"
 
 namespace coco {
@@ -36,7 +37,16 @@ class CoroutineHandler {
     CoCoroutine *coroutine = nullptr;
 };
 
-// Per-coroutine ID, keyed by the ST thread. Only safe from the single OS thread running ST.
+// True once CocoInit() has succeeded on the calling thread.
+bool CocoRuntimeReady();
+
+// Closes fd and frees its netfd. Use it instead of st_netfd_close, which puts the netfd on
+// the free list every thread shares and only then reads the fd to close: another thread
+// may have taken the netfd for a new fd by then, which would be closed instead. Unlike
+// st_netfd_close it cannot tell whether a coroutine is still blocked on fd; none may be.
+int CloseNetfd(st_netfd_t fd);
+
+// Per-coroutine ID, keyed by the ST thread. Each thread's runtime has its own.
 class CoroutineContext {
  public:
     CoroutineContext() = default;
@@ -105,6 +115,7 @@ class CoCoroutine {
     // The handler's Cycle() has returned.
     bool cycle_done = false;
     bool detached_ = false;
+    OwnerThread owner_;
 };
 
 // Owned by the caller. Derived destructors must call Stop() before freeing anything

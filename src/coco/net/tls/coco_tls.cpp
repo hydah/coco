@@ -6,6 +6,8 @@
 
 #include <assert.h>
 
+#include <mutex>
+
 #include "st.h"
 
 #include "coco/common/error.hpp"
@@ -370,7 +372,10 @@ StreamDialer TlsDialer(std::shared_ptr<TlsConfig> cfg, StreamDialer under) {
 
         std::shared_ptr<TlsConfig> c = cfg;
         if (!c) {
+            // Shared by every thread: the SSL_CTX in it may be used by several at once.
+            static std::mutex mu;
             static std::shared_ptr<TlsConfig> shared;
+            std::lock_guard<std::mutex> lock(mu);
             if (!shared && (ret = TlsConfig::NewClient(&shared)) != COCO_SUCCESS) {
                 return ret;
             }

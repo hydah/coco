@@ -349,8 +349,12 @@ int HttpClient::RoundTrip(HttpRequest &req, const HttpUrl &u, std::unique_ptr<Ht
 }
 
 HttpClient &HttpDefaultClient() {
-    // Never destroyed: responses and coroutines may still use it during exit.
-    static HttpClient *client = new HttpClient();
+    // One per thread, as its pooled connections belong to that thread's runtime. Never
+    // destroyed: responses and coroutines may still use it during exit.
+    static thread_local HttpClient *client = nullptr;
+    if (client == nullptr) {
+        client = new HttpClient();
+    }
     return *client;
 }
 

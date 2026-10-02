@@ -3,6 +3,7 @@
 
 #include <unordered_set>
 
+#include "coco/base/owner_thread.hpp"
 #include "coco/base/st_fwd.hpp"
 
 namespace coco {
@@ -32,6 +33,7 @@ class ConnManager {
     std::unordered_set<ConnRoutine *> conns;
     // Created by the first Shutdown() that has to wait; signalled when conns drains.
     st_cond_t cond_ = nullptr;
+    OwnerThread owner_;
 };
 
 }  // namespace coco

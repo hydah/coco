@@ -26,6 +26,11 @@ class TcpConn : public StreamConn {
     // Shuts down the sending side: the peer reads EOF, while reads here go on.
     int CloseWrite();
 
+    // Gives up the socket without closing it, so that another thread can take it with
+    // TcpConnFromFd. No coroutine may be blocked on this connection. Afterwards every call
+    // fails with ERROR_SOCKET_CLOSED, and the fd is the caller's to close.
+    int Release(int *fd);
+
  private:
     CocoSocket skt_;
 };

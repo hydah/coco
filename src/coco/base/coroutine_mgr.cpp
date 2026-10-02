@@ -18,9 +18,13 @@ ConnManager::~ConnManager() {
     }
 }
 
-void ConnManager::Push(ConnRoutine *conn) { conns.insert(conn); }
+void ConnManager::Push(ConnRoutine *conn) {
+    owner_.Check();
+    conns.insert(conn);
+}
 
 void ConnManager::Remove(ConnRoutine *conn) {
+    owner_.Check();
     if (conns.erase(conn) == 0) {
         return;
     }
@@ -32,6 +36,7 @@ void ConnManager::Remove(ConnRoutine *conn) {
 }
 
 void ConnManager::Shutdown() {
+    owner_.Check();
     if (conns.empty()) {
         return;
     }

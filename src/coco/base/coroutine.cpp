@@ -5,7 +5,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <thread>
 #ifdef __linux__
 #include <sys/epoll.h>
 #elif defined(__APPLE__)
@@ -22,14 +21,18 @@ namespace coco {
 
 int CoroutineHandler::GetCoroutineState() { return coroutine->pull(); }
 
-// ST thread-specific slot holding the CoCoroutine running on the current thread.
-static int _coroutine_key = -1;
+// Every thread that uses coco has a runtime of its own, as ST has a scheduler per thread.
+// The ST thread-specific slot holding the running CoCoroutine; ST's keys are per thread.
+static thread_local int _coroutine_key = -1;
+// Never freed: a log line may still ask for the coroutine ID while the thread exits.
+static thread_local CoroutineContext *_st_context = nullptr;
+static thread_local bool initialized = false;
 
-CoroutineContext *_st_context = new CoroutineContext();
 int CoroutineContext::generate_id() {
-    static int id = 100;
+    // Shared by all threads, so an ID names one coroutine in the whole process's log.
+    static std::atomic<int> next_id(100);
 
-    int gid = id++;
+    int gid = next_id++;
     cache_[st_thread_self()] = gid;
     return gid;
 }
@@ -57,6 +60,7 @@ int32_t CoCoroutine::start() {
     if ((ret = CocoInit()) != COCO_SUCCESS) {
         return ret;
     }
+    owner_.Check();
 
     if (started) {
         coco_info("coroutine %s already running.", name.c_str());
@@ -84,6 +88,7 @@ int32_t CoCoroutine::start() {
 }
 
 void CoCoroutine::stop() {
+    owner_.Check();
     if (disposed) {
         return;
     }
@@ -119,6 +124,7 @@ void CoCoroutine::stop() {
 }
 
 void CoCoroutine::interrupt() {
+    owner_.Check();
     if (!started || interrupted || cycle_done) {
         return;
     }
@@ -252,22 +258,16 @@ static bool st_kqueue_is_supported(void) {
 }
 #endif
 
-// ST could run one scheduler per thread, but coco's own state is shared by the whole
-// process, so the runtime belongs to the first thread that sets it up.
-static std::atomic<std::thread::id> owner_thread{std::thread::id()};
-static bool initialized = false;
+bool CocoRuntimeReady() { return initialized; }
 
-static bool OnRuntimeThread() { return owner_thread.load() == std::this_thread::get_id(); }
+int CloseNetfd(st_netfd_t fd) {
+    int osfd = st_netfd_fileno(fd);
+    st_netfd_free(fd);
+    return close(osfd);
+}
 
 int CocoInit() {
     int ret = COCO_SUCCESS;
-    std::thread::id owner;
-    if (!owner_thread.compare_exchange_strong(owner, std::this_thread::get_id()) &&
-        owner != std::this_thread::get_id()) {
-        ret = ERROR_ST_WRONG_THREAD;
-        coco_error("coco runs on the thread that set it up, not this one. ret=%d", ret);
-        return ret;
-    }
     if (initialized) {
         return ret;
     }
@@ -289,8 +289,9 @@ int CocoInit() {
 #endif
 
     // Select the best event system available on the OS. In Linux this is
-    // epoll(). On BSD it will be kqueue.
-    if (st_set_eventsys(ST_EVENTSYS_ALT) == -1) {
+    // epoll(). On BSD it will be kqueue. It is already set when an earlier call failed
+    // further down.
+    if (st_get_eventsys() == -1 && st_set_eventsys(ST_EVENTSYS_ALT) == -1) {
         ret = ERROR_ST_SET_EPOLL;
         coco_error("st_set_eventsys use %s failed. ret=%d", st_get_eventsys_name(), ret);
         return ret;
@@ -310,10 +311,15 @@ int CocoInit() {
         return ret;
     }
 
-    if (_st_context) {
+    if (!_st_context) {
+        _st_context = new CoroutineContext();
         auto cid_ = _st_context->generate_id();
         _st_context->set_id(cid_);
         coco_trace("set main routine id: %d", cid_);
+    }
+
+    if ((ret = StartThreadShutdown()) != COCO_SUCCESS) {
+        return ret;
     }
     coco_trace("st_init success, use %s", st_get_eventsys_name());
     initialized = true;
@@ -326,10 +332,10 @@ void CocoSleepMs(uint64_t durms) {
     }
 }
 void CocoSleep(uint32_t durs) { CocoSleepMs(uint64_t(durs) * 1000); }
-int CocoGetCoroutineID() { return OnRuntimeThread() ? _st_context->get_id() : 0; }
+int CocoGetCoroutineID() { return _st_context ? _st_context->get_id() : 0; }
 
 bool CocoShouldStop() {
-    if (_coroutine_key < 0 || !OnRuntimeThread()) {
+    if (_coroutine_key < 0) {
         return false;
     }
     auto c = static_cast<CoCoroutine *>(st_thread_getspecific(_coroutine_key));

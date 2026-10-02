@@ -13,10 +13,10 @@ namespace coco {
 // Output is coalesced up to this size; Go uses a 4KB bufio.Writer too.
 static const size_t kWriteBufferBytes = 4096;
 
-// The Date header value, formatted once per second.
+// The Date header value, formatted once per second by each thread.
 static const std::string &HttpDate() {
-    static time_t last = 0;
-    static std::string value;
+    static thread_local time_t last = 0;
+    static thread_local std::string value;
     time_t now = time(nullptr);
     if (now != last) {
         char buf[64];

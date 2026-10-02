@@ -23,10 +23,8 @@ CocoSocket::CocoSocket(st_netfd_t stfd) : stfd(stfd) {
 
 CocoSocket::~CocoSocket() {
     if (stfd) {
-        // we must ensure the close is ok.
-        int r0 = st_netfd_close(stfd);
-        assert(r0 != -1);
-        (void)r0;
+        owner_.Check();
+        CloseNetfd(stfd);
         stfd = nullptr;
     }
 }
@@ -47,10 +45,33 @@ int64_t CocoSocket::get_recv_bytes() { return recv_bytes; }
 
 int64_t CocoSocket::get_send_bytes() { return send_bytes; }
 
-int CocoSocket::get_osfd() { return st_netfd_fileno(stfd); }
+int CocoSocket::get_osfd() { return stfd ? st_netfd_fileno(stfd) : -1; }
+
+int CocoSocket::release() {
+    if (!stfd) {
+        return -1;
+    }
+    owner_.Check();
+    int fd = st_netfd_fileno(stfd);
+    st_netfd_free(stfd);
+    stfd = nullptr;
+    return fd;
+}
+
+int CocoSocket::check() {
+    owner_.Check();
+    if (!stfd) {
+        errno = EBADF;
+        return ERROR_SOCKET_CLOSED;
+    }
+    return COCO_SUCCESS;
+}
 
 int CocoSocket::Read(void *buf, size_t size, ssize_t *nread) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_read = st_read(stfd, buf, size, recv_timeout);
     if (nread) {
@@ -80,6 +101,9 @@ int CocoSocket::Read(void *buf, size_t size, ssize_t *nread) {
 
 int CocoSocket::ReadFully(void *buf, size_t size, ssize_t *nread) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_read = st_read_fully(stfd, buf, size, recv_timeout);
     if (nread) {
@@ -109,6 +133,9 @@ int CocoSocket::ReadFully(void *buf, size_t size, ssize_t *nread) {
 
 int CocoSocket::Write(void *buf, size_t size, ssize_t *nwrite) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_write = st_write(stfd, buf, size, send_timeout);
     if (nwrite) {
@@ -133,6 +160,9 @@ int CocoSocket::Write(void *buf, size_t size, ssize_t *nwrite) {
 
 int CocoSocket::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_write = st_writev(stfd, iov, iov_size, send_timeout);
     if (nwrite) {
@@ -157,6 +187,9 @@ int CocoSocket::Writev(const iovec *iov, int iov_size, ssize_t *nwrite) {
 
 int CocoSocket::recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *from, int *fromlen) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_read = st_recvfrom(stfd, buf, size, from, fromlen, recv_timeout);
     if (nread) {
@@ -186,6 +219,9 @@ int CocoSocket::recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *f
 
 int CocoSocket::sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to, int tolen) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_write = st_sendto(stfd, buf, size, to, tolen, send_timeout);
     if (nwrite) {
@@ -210,6 +246,9 @@ int CocoSocket::sendto(void *buf, int size, ssize_t *nwrite, struct sockaddr *to
 
 int CocoSocket::recvmsg(ssize_t *nread, struct msghdr *msg, int flags) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_read = st_recvmsg(stfd, msg, flags, recv_timeout);
     if (nread) {
@@ -239,6 +278,9 @@ int CocoSocket::recvmsg(ssize_t *nread, struct msghdr *msg, int flags) {
 
 int CocoSocket::sendmsg(ssize_t *nwrite, struct msghdr *msg, int flags) {
     int ret = COCO_SUCCESS;
+    if ((ret = check()) != COCO_SUCCESS) {
+        return ret;
+    }
 
     ssize_t nb_write = st_sendmsg(stfd, msg, flags, send_timeout);
     if (nwrite) {
@@ -405,7 +447,7 @@ int DialStream(const std::string &host, int port, int64_t timeout_us, st_netfd_t
             return COCO_SUCCESS;
         }
         bool interrupted = errno == EINTR;
-        st_netfd_close(s);
+        CloseNetfd(s);
         ret = ERROR_ST_CONNECT;
         if (interrupted) {
             break;
