@@ -164,7 +164,7 @@ cd examples/http-server
 | --- | --- | --- |
 | `threads_single` | 主线程 `CocoRun` | 三个各要 100ms 的回复一共约 100ms，全在 T0 |
 | `threads_server` | `TcpServerOptions::threads = 4` | T0 只 accept，8 个连接轮流分到 T1～T4 |
-| `threads_post` | `CocoThread::Post` | 300ms 计算放在主线程会让 tick 停 300ms，投递给 worker 后 tick 照常 |
+| `threads_post` | `TaskGroup` + `CocoThread::Call` | 300ms 计算放在主线程会让 tick 停 300ms；用 `Call` 交给 worker 后 tick 照常，只有调用的那条协程等结果 |
 | `threads_plain` | `std::thread` + 各自 `CocoRun` | 两个线程各跑一个服务器，主线程一次 `CocoShutdown()` 把两个都停掉 |
 
 ```bash

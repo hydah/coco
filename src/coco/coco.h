@@ -5,6 +5,7 @@
 
 // IWYU pragma: begin_exports
 #include "coco/base/coco_thread.hpp"
+#include "coco/base/task_group.hpp"
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
 #include "coco/log/log.hpp"

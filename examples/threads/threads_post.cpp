@@ -1,7 +1,5 @@
 #include <stdio.h>
 
-#include <atomic>
-
 #include "coco/coco.h"
 #include "thread_name.hpp"
 
@@ -17,31 +15,37 @@ static long Compute(int ms) {
     return loops;
 }
 
-// The main thread ticks every 50ms, and on the third tick starts 300ms of computation.
-// Run inline it stalls the main thread, and every coroutine on it, until it is done; posted
-// to a CocoThread it runs on the worker while the ticks go on.
+// The main thread ticks every 50ms while a second coroutine, on the third tick, has 300ms
+// of computation done. Run inline it stalls the main thread, and every coroutine on it,
+// until it is done; called on a CocoThread it runs on the worker while the ticks go on,
+// and only the coroutine that called waits for the result.
 static void Ticks(CocoThread *worker) {
-    std::atomic<bool> done(false);
     int64_t begin = NowMs();
+    bool done = false;
+    TaskGroup tasks;
+    tasks.Spawn([&]() {
+        CocoSleepMs(100);
+        long loops = 0;
+        if (worker == nullptr) {
+            loops = Compute(300);
+        } else if (worker->Call([&loops, begin]() {
+                       loops = Compute(300);
+                       printf("  computed on %s at %lldms\n", ThreadName(),
+                              (long long)(NowMs() - begin));
+                       return COCO_SUCCESS;
+                   }) != COCO_SUCCESS) {
+            return 1;
+        }
+        printf("  %ld loops, back on %s at %lldms\n", loops, ThreadName(),
+               (long long)(NowMs() - begin));
+        done = true;
+        return 0;
+    });
     for (int tick = 0; tick < 8 || !done; ++tick) {
         printf("  tick %d on %s at %lldms\n", tick, ThreadName(), (long long)(NowMs() - begin));
-        if (tick == 2) {
-            if (worker == nullptr) {
-                Compute(300);
-                printf("  computed inline on %s at %lldms\n", ThreadName(),
-                       (long long)(NowMs() - begin));
-                done = true;
-            } else {
-                worker->Post([&done, begin]() {
-                    Compute(300);
-                    printf("  computed on %s at %lldms\n", ThreadName(),
-                           (long long)(NowMs() - begin));
-                    done = true;
-                });
-            }
-        }
         CocoSleepMs(50);
     }
+    tasks.Wait();
 }
 
 int main() {
@@ -55,7 +59,7 @@ int main() {
         if (worker.Start() != COCO_SUCCESS) {
             return 1;
         }
-        printf("posted to a CocoThread: the ticks go on\n");
+        printf("called on a CocoThread: the ticks go on\n");
         Ticks(&worker);
         // Interrupts what still runs on the worker, waits for it and joins the thread.
         worker.Stop();

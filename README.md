@@ -101,6 +101,25 @@ int main() {
 
 `fn` 就跑在主协程上，用的是进程自己的栈，不是 64KB 的协程栈。只有正在进行的那一次阻塞调用会失败，之后的调用照常工作，所以循环要自己检查 `CocoShouldStop()`。`examples/pingpong` 里的两个客户端就是这样写的。
 
+### 一个线程上同时做几件事
+
+`TaskGroup` 在当前线程上为每个函数起一条协程，并统一取消、统一等待。它不需要继承，也不需要手动 `delete`：析构时先取消再等所有函数返回，所以这些函数可以放心使用所在作用域栈上的变量。
+
+```cpp
+return CocoRun([&]() {
+    TaskGroup tasks;
+    tasks.Spawn([&]() { return ReadLoop(conn); });
+    tasks.Spawn([&]() { return Heartbeat(conn); });
+    return tasks.Wait();         // Ctrl-C 时 CocoRun 的主体被中断，Wait 会取消整组再等它们退出
+});
+```
+
+- `Cancel()` 中断组里的每个函数，但不等待；之后再 `Spawn` 的函数一启动就是中断状态。
+- `Wait()` 只挂起调用它的协程，返回第一个出错函数的返回值。调用方自己被中断（或 `CocoShouldStop()` 为 true）时，`Wait()` 会先取消整组再接着等，所以停止请求会逐层传到子任务。
+- 某个函数如果不响应中断，`Wait()` 和析构就会一直等下去。
+
+调度是协作式的：一条协程不阻塞、也不让出，同一线程上的其他协程、I/O 和停止请求就全都进不来，连检查 `CocoShouldStop()` 也看不到跨线程送来的请求。不做 I/O 的长循环每隔几毫秒调一次 `CocoYield()`，再检查 `CocoShouldStop()`；真正耗 CPU 的计算交给单独的线程（见下面的 `CocoThread::Call()`），别放在服务 I/O 的线程上。
+
 ### 多线程
 
 一个线程上的所有协程只用一个核。要用满多核，最简单的是让服务器把连接分给几个 worker 线程：
@@ -117,17 +136,27 @@ return server.ListenAndServe("0.0.0.0", 8080);
 也可以直接用 `CocoThread`，它是一个跑着自己运行时的内核线程：
 
 ```cpp
-CocoThread worker;
+CocoThread worker;               // CocoThread worker(1000)：最多 1000 个未返回的函数
 worker.Start();
 worker.Post([]() { /* 在 worker 上的一个新协程里运行，可以阻塞在 I/O 上 */ });
+long n = 0;
+int ret = worker.Call([&]() { n = Compute(); return COCO_SUCCESS; });  // 等它返回，拿到返回值
 worker.Stop();                   // 中断还在跑的函数，等它们返回，再 join 线程
 ```
 
-`Post()` 可以在任何线程上调用，从不阻塞。其他接口只能在创建它的线程上用。投递的函数和服务器的处理函数一样，被中断时要能结束（阻塞调用失败一次，`CocoShouldStop()` 变为 true）：`Stop()` 时会中断，收到退出请求时也会中断，线程本身则一直运行到 `Stop()`。`Stop()` 只挂起调用它的那个协程，同一线程上的其他协程照常运行。
+`Post()` 和 `Call()` 可以在任何线程上调用，其他接口只能在创建它的线程上用。
+
+- **`Post()`** 从不阻塞，返回成功只代表函数已经入队。投递的函数各自跑在一条协程上，是并发执行的，不是排队一个接一个地跑。
+- **`Call()`** 只挂起调用它的协程（没有运行时的线程则阻塞整个线程），直到函数返回，再把返回值交回来。函数可以使用调用方栈上的变量，所以调用方被中断也不会提前返回。每次调用要用一个 pipe，适合偶尔发一次请求，不适合每条消息都用。
+- **负载上限**：构造时给了上限的话，未返回的函数达到上限时，`Post()` / `Call()` 返回 `ERROR_THREAD_BUSY`。
+
+投递的函数和服务器的处理函数一样，被中断时要能结束（阻塞调用失败一次，`CocoShouldStop()` 变为 true）。`Stop()` 时会中断；收到退出请求时也会中断，包括请求之后才投递的函数，它们一启动就是中断状态，和退出请求之后才开始运行的 `CocoRun` 主体一样。线程本身则一直运行到 `Stop()`。
+
+`Stop()` 只挂起调用它的那个协程，同一线程上的其他协程照常运行。它没有超时：有函数不理会中断时会一直等下去。一直没启动的线程，`Stop()` 时把排队的函数直接销毁，不会运行它们。
 
 线程之间只交接两样东西：
 
-- **投递的函数**：`CocoThread::Post()`。
+- **投递的函数**：`CocoThread::Post()` / `Call()`。函数捕获的东西随它一起过去，但 coco 创建的对象（socket、连接等）仍然只属于创建它的线程。
 - **裸 fd**：`TcpConn::Release()` 交出 fd 但不关闭它，另一个线程用 `TcpConnFromFd()` 在自己的运行时上包回来。TLS 会话不能换线程，要在交接之后再包 `TlsConn`。
 
 怎么选：只在一个线程里干活就用 `CocoRun`；服务器想用满多核，加 `threads` 选项；要把任务或连接交给别的线程，用 `CocoThread`；几个线程各干各的、互不派活，普通 `std::thread` 里各自 `CocoRun` 也行。`examples/threads/` 下的 `threads_single`、`threads_server`、`threads_post`、`threads_plain` 分别演示这四种，运行后输出里标出每一步在哪个线程。
@@ -312,7 +341,7 @@ core       协程、日志、错误码、工具             st_thread_create
 src/coco/
 ├── coco.h           汇总头文件
 ├── coco_api.h       CocoInit、CocoRun、CocoWaitForShutdown / CocoShutdown、ListenTcp / DialTcp / TcpConnFromFd、ListenUdp / DialUdp、CocoSleepMs、CocoShouldStop
-├── base/            协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager；CocoThread；退出与信号
+├── base/            协程：CoCoroutine、ListenRoutine、ConnRoutine、ConnManager；TaskGroup；CocoThread；退出与信号
 ├── common/          错误码
 ├── log/             日志
 ├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5

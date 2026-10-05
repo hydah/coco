@@ -10,14 +10,13 @@
 #include <mutex>
 #include <system_error>
 #include <thread>
-#include <unordered_set>
-#include <vector>
 
 #include "st.h"
 
 #include "coco/base/coroutine.hpp"
 #include "coco/base/owner_thread.hpp"
 #include "coco/base/shutdown.hpp"
+#include "coco/base/task_group.hpp"
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
 #include "coco/log/log.hpp"
@@ -25,6 +24,8 @@
 namespace coco {
 
 struct CocoThreadState {
+    explicit CocoThreadState(size_t max) : max_load(max) {}
+
     // Shared with the threads that post.
     std::mutex mu;
     std::deque<std::function<void()>> queue;
@@ -33,6 +34,8 @@ struct CocoThreadState {
     // Wakes the worker; the write end is -1 before Start() and after Stop().
     int wake[2] = {-1, -1};
     std::atomic<size_t> load{0};
+    // 0 for no limit.
+    const size_t max_load;
 
     // Only touched by the owner.
     OwnerThread owner;
@@ -46,98 +49,62 @@ struct CocoThreadState {
 
 namespace {
 
-class Worker;
-
-// One posted function, on a detached coroutine that deletes the task when it returns.
-class Task : public CoroutineHandler {
+// A posted function. It counts in Load() until it is destroyed, whether it ran or not.
+class Posted {
  public:
-    Task(Worker *worker, std::function<void()> fn) : worker_(worker), fn_(std::move(fn)) {
-        coroutine = new CoCoroutine("task", this);
-        coroutine->set_detached(true);
+    Posted(std::function<void()> fn, std::atomic<size_t> *load) : fn(std::move(fn)), load_(load) {
+        ++*load_;
     }
-    ~Task() override;
+    ~Posted() { --*load_; }
 
-    int Start() { return coroutine->start(); }
-    void Interrupt() { coroutine->interrupt(); }
-    int Cycle() override {
-        fn_();
-        return COCO_SUCCESS;
-    }
+    Posted(const Posted &) = delete;
+    Posted &operator=(const Posted &) = delete;
+
+    std::function<void()> fn;
 
  private:
-    Worker *worker_;
-    std::function<void()> fn_;
+    std::atomic<size_t> *load_;
 };
 
-// What the worker thread keeps while it runs. Only used on that thread.
-class Worker {
- public:
-    explicit Worker(CocoThreadState *state) : state_(state), drained_(st_cond_new()) {}
-    ~Worker() { st_cond_destroy(drained_); }
-
-    // Starts what is posted until Stop(), then interrupts every task and waits for them.
-    void Run(st_netfd_t wake) {
-        for (;;) {
+// Starts what is posted on a TaskGroup until Stop(), then cancels the group and waits for
+// it. Only used on the worker thread.
+void RunTasks(CocoThreadState *state, st_netfd_t wake) {
+    TaskGroup tasks;
+    // A shutdown request interrupts what runs, and what is started later starts
+    // interrupted; the thread itself keeps running until Stop().
+    SetShutdownHook([&tasks]() { tasks.Cancel(); });
+    for (;;) {
+        bool closed = false;
+        {
+            // Each task gets a copy, so the batch holds every function, and its place in
+            // Load(), until it is gone, which has to be before the worker waits.
             std::deque<std::function<void()>> batch;
-            bool closed = false;
             {
-                std::lock_guard<std::mutex> lock(state_->mu);
-                batch.swap(state_->queue);
-                closed = state_->closed;
+                std::lock_guard<std::mutex> lock(state->mu);
+                batch.swap(state->queue);
+                closed = state->closed;
             }
             for (auto &fn : batch) {
-                StartTask(std::move(fn));
-            }
-            if (closed) {
-                break;
-            }
-            char buf[64];
-            ssize_t n = st_read(wake, buf, sizeof(buf), ST_UTIME_NO_TIMEOUT);
-            if (n <= 0 && !(n < 0 && errno == EINTR)) {
-                coco_error("coco thread wake pipe read failed. n=%d errno=%d", (int)n, errno);
-                // Never happens; poll rather than spin.
-                st_usleep(10 * 1000);
+                tasks.Spawn([fn]() {
+                    fn();
+                    return COCO_SUCCESS;
+                });
             }
         }
-        InterruptAll();
-        while (!tasks_.empty()) {
-            st_cond_wait(drained_);
+        if (closed) {
+            break;
+        }
+        char buf[64];
+        ssize_t n = st_read(wake, buf, sizeof(buf), ST_UTIME_NO_TIMEOUT);
+        if (n <= 0 && !(n < 0 && errno == EINTR)) {
+            coco_error("coco thread wake pipe read failed. n=%d errno=%d", (int)n, errno);
+            // Never happens; poll rather than spin.
+            st_usleep(10 * 1000);
         }
     }
-
-    void InterruptAll() {
-        std::vector<Task *> live(tasks_.begin(), tasks_.end());
-        for (Task *t : live) {
-            t->Interrupt();
-        }
-    }
-
-    void Done(Task *t) {
-        tasks_.erase(t);
-        --state_->load;
-        if (tasks_.empty()) {
-            st_cond_broadcast(drained_);
-        }
-    }
-
- private:
-    void StartTask(std::function<void()> fn) {
-        Task *t = new Task(this, std::move(fn));
-        tasks_.insert(t);
-        if (t->Start() != COCO_SUCCESS) {
-            coco_error("coco thread could not start a task");
-            delete t;
-        }
-    }
-
-    CocoThreadState *state_;
-    std::unordered_set<Task *> tasks_;
-    st_cond_t drained_;
-};
-
-Task::~Task() {
-    delete coroutine;
-    worker_->Done(this);
+    tasks.Cancel();
+    tasks.Wait();
+    SetShutdownHook(nullptr);
 }
 
 void CloseFd(int *fd) {
@@ -168,12 +135,7 @@ void RunWorker(std::shared_ptr<CocoThreadState> state, std::promise<int> ready) 
     ready.set_value(ret);
 
     if (ret == COCO_SUCCESS) {
-        {
-            Worker worker(state.get());
-            SetShutdownHook([&worker]() { worker.InterruptAll(); });
-            worker.Run(wake);
-            SetShutdownHook(nullptr);
-        }
+        RunTasks(state.get(), wake);
         CloseNetfd(wake);
     } else {
         close(state->wake[0]);
@@ -186,7 +148,7 @@ void RunWorker(std::shared_ptr<CocoThreadState> state, std::promise<int> ready) 
 
 }  // namespace
 
-CocoThread::CocoThread() : state_(std::make_shared<CocoThreadState>()) {}
+CocoThread::CocoThread(size_t max_load) : state_(std::make_shared<CocoThreadState>(max_load)) {}
 
 CocoThread::~CocoThread() { Stop(); }
 
@@ -247,8 +209,12 @@ int CocoThread::Post(std::function<void()> fn) {
     if (s.closed) {
         return ERROR_THREAD_DISPOSED;
     }
-    s.queue.push_back(std::move(fn));
-    ++s.load;
+    // Only Post() adds to the load, under this lock, so the limit is never passed.
+    if (s.max_load > 0 && s.load >= s.max_load) {
+        return ERROR_THREAD_BUSY;
+    }
+    auto posted = std::make_shared<Posted>(std::move(fn), &s.load);
+    s.queue.push_back([posted]() { posted->fn(); });
     if (s.wake[1] >= 0) {
         char b = 0;
         ssize_t n = write(s.wake[1], &b, 1);
@@ -278,6 +244,54 @@ static void WaitReadable(int *fd) {
     CloseFd(fd);
 }
 
+namespace {
+
+// Closes the write end of a pipe once the posted function holding it is destroyed, which
+// is the caller's cue that the function has returned, or will never run.
+class CallDone {
+ public:
+    explicit CallDone(int fd) : fd_(fd) {}
+    ~CallDone() {
+        // The byte, not only the close, so that the reader's wake-up is ordered after the
+        // function for ThreadSanitizer too.
+        char b = 0;
+        ssize_t n = write(fd_, &b, 1);
+        (void)n;
+        close(fd_);
+    }
+
+    CallDone(const CallDone &) = delete;
+    CallDone &operator=(const CallDone &) = delete;
+
+ private:
+    int fd_;
+};
+
+}  // namespace
+
+int CocoThread::Call(std::function<int()> fn) {
+    if (!fn) {
+        return ERROR_SYSTEM_ASSERT_FAILED;
+    }
+    int fds[2];
+    if (!MakePipe(fds)) {
+        coco_error("coco thread pipe failed. errno=%d", errno);
+        return ERROR_SYSTEM_CREATE_PIPE;
+    }
+    auto result = std::make_shared<std::atomic<int>>(ERROR_THREAD_DISPOSED);
+    auto done = std::make_shared<CallDone>(fds[1]);
+    int ret = Post([fn, result, done]() { result->store(fn()); });
+    // From here only the posted function holds the write end.
+    done.reset();
+    if (ret != COCO_SUCCESS) {
+        CloseFd(&fds[0]);
+        return ret;
+    }
+    // fn may use what lives on the caller's stack, so the wait goes on through interrupts.
+    WaitReadable(&fds[0]);
+    return result->load();
+}
+
 void CocoThread::Stop() {
     CocoThreadState &s = *state_;
     s.owner.Check();
@@ -304,12 +318,17 @@ void CocoThread::Stop() {
         WaitReadable(&s.done[0]);
         s.thread.join();
     }
+    // What was posted to a thread that never ran, as Start() was not called or failed.
+    std::deque<std::function<void()>> unrun;
     {
         std::lock_guard<std::mutex> lock(s.mu);
         CloseFd(&s.wake[1]);
         // Closed by the worker.
         s.wake[0] = -1;
+        unrun.swap(s.queue);
     }
+    // Outside the lock, as destroying what a function captured may post.
+    unrun.clear();
     CloseFd(&s.done[0]);
     CloseFd(&s.done[1]);
     s.stopped = true;

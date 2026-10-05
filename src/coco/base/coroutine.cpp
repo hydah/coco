@@ -332,6 +332,13 @@ void CocoSleepMs(uint64_t durms) {
     }
 }
 void CocoSleep(uint32_t durs) { CocoSleepMs(uint64_t(durs) * 1000); }
+void CocoYield() {
+    // A zero sleep goes through the idle thread, which polls for I/O, as soon as no other
+    // coroutine is runnable.
+    if (CocoInit() == COCO_SUCCESS) {
+        st_usleep(0);
+    }
+}
 int CocoGetCoroutineID() { return _st_context ? _st_context->get_id() : 0; }
 
 bool CocoShouldStop() {

@@ -78,6 +78,7 @@ constexpr int ERROR_THREAD_STARTED = 1078;
 constexpr int ERROR_SOCKET_SETREUSEADDR = 1079;
 constexpr int ERROR_SOCKET_SETCLOSEEXEC = 1080;
 constexpr int ERROR_SOCKET_ACCEPT = 1081;
+constexpr int ERROR_THREAD_BUSY = 1082;
 
 constexpr int ERROR_HTTP_PARSE_URI = 3007;
 constexpr int ERROR_HTTP_DATA_INVALID = 3008;

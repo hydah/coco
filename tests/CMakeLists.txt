@@ -10,6 +10,7 @@ add_executable(coco_tests
     runtime_test.cpp
     rtmp_test.cpp
     thread_test.cpp
+    task_group_test.cpp
 )
 # The tests call ST directly. They only take its header: a static libcoco brings libst.a
 # along, and a shared one contains it, so linking st here would make a second scheduler.
@@ -138,6 +139,18 @@ set(COCO_TEST_CASES
     TcpServerThreadsStopOnShutdown
     TcpServerThreadsNeedTcpListener
     HttpServerThreads
+    TaskGroupWaitsForAll
+    TaskGroupWaitReturnsFirstError
+    TaskGroupCancelInterrupts
+    TaskGroupDestructorCancelsAndWaits
+    TaskGroupWaitCancelsWhenInterrupted
+    TaskGroupInCocoRunStopsOnShutdown
+    CocoYieldLetsStopReachBusyLoop
+    CocoThreadNeverStartedDropsPosts
+    CocoThreadCallReturnsResult
+    CocoThreadCallFromPlainThreadAndNeverStarted
+    CocoThreadMaxLoad
+    CocoThreadPostAfterShutdownStartsInterrupted
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

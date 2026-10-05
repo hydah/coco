@@ -34,6 +34,12 @@ int CocoInit();
 int CocoGetCoroutineID();
 void CocoSleepMs(uint64_t durms);
 void CocoSleep(uint32_t durs);
+// Lets the other coroutines of the thread run, and the thread take in what arrived, a stop
+// or shutdown request included, then resumes. Scheduling is cooperative: until the running
+// coroutine blocks or yields, nothing else on its thread runs, so a loop that does no I/O
+// calls this every few milliseconds, then checks CocoShouldStop(). Work that takes long
+// without yielding belongs to a thread of its own, not to one serving I/O.
+void CocoYield();
 // True once the coroutine running this code has been stopped or interrupted. Lets a
 // plain function (e.g. a TcpServer handler) exit a loop that does no blocking I/O. On the
 // coroutine CocoRun() runs its function on it turns true with a shutdown request; on any

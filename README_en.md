@@ -101,6 +101,25 @@ int main() {
 
 `fn` runs on the main coroutine, on the process's own stack rather than a 64KB coroutine stack. Only the blocking call in progress fails; later ones work, so the loop has to check `CocoShouldStop()`. The two pingpong clients in `examples/pingpong` are written this way.
 
+### Several things at once on one thread
+
+`TaskGroup` runs functions side by side on the calling thread, each on a coroutine of its own, and cancels and waits for them together. There is nothing to derive from and nothing to delete: its destructor cancels the functions and waits until they have returned, so they may use what lives on the stack of the scope that owns the group.
+
+```cpp
+return CocoRun([&]() {
+    TaskGroup tasks;
+    tasks.Spawn([&]() { return ReadLoop(conn); });
+    tasks.Spawn([&]() { return Heartbeat(conn); });
+    return tasks.Wait();         // on Ctrl-C the body is interrupted, and Wait cancels the group, then waits
+});
+```
+
+- `Cancel()` interrupts every function of the group without waiting; one spawned afterwards starts interrupted.
+- `Wait()` only suspends the calling coroutine and returns the first error a function returned. When the caller itself is interrupted (or `CocoShouldStop()` is true for it), `Wait()` cancels the group first and goes on waiting, so a stop request reaches the functions below.
+- A function that ignores the interrupt makes `Wait()`, and the destructor, wait for ever.
+
+Scheduling is cooperative: while a coroutine neither blocks nor yields, nothing else on its thread gets in, not the other coroutines, not I/O, and not a stop request, which `CocoShouldStop()` cannot see either when it comes from another thread. A loop that does no I/O calls `CocoYield()` every few milliseconds, then checks `CocoShouldStop()`; work that really burns the CPU goes to a thread of its own (see `CocoThread::Call()` below), not to one that serves I/O.
+
 ### Threads
 
 All coroutines of one thread share one core. The simplest way to use more is to let a server hand its connections to worker threads:
@@ -117,17 +136,27 @@ The handler is then called on several threads at once, so whatever it shares mus
 `CocoThread` is the building block, a kernel thread with a runtime of its own:
 
 ```cpp
-CocoThread worker;
+CocoThread worker;               // CocoThread worker(1000): at most 1000 functions not returned yet
 worker.Start();
 worker.Post([]() { /* runs on a new coroutine on the worker, and may block on I/O */ });
+long n = 0;
+int ret = worker.Call([&]() { n = Compute(); return COCO_SUCCESS; });  // waits for it, returns what it returned
 worker.Stop();                   // interrupts what still runs, waits for it, joins the thread
 ```
 
-`Post()` may be called from any thread and never blocks; everything else only on the thread that created the object. Like a server's handler, a posted function has to end when it is interrupted (a blocking call fails once and `CocoShouldStop()` turns true): `Stop()` interrupts it, and so does a shutdown request, while the thread itself runs until `Stop()`. `Stop()` only suspends the calling coroutine; the other coroutines of its thread keep running.
+`Post()` and `Call()` may be called from any thread; everything else only on the thread that created the object.
+
+- **`Post()`** never blocks, and its success only means the function is queued. Posted functions each run on a coroutine of their own, side by side, not one after the other.
+- **`Call()`** suspends the calling coroutine (or blocks a thread without a runtime) until the function has returned, and returns what it returned. The function may use the caller's stack, so an interrupt of the caller does not end the wait. Each call takes a pipe: use it for a request now and then, not for every message.
+- **Load limit**: with a limit given to the constructor, `Post()` and `Call()` fail with `ERROR_THREAD_BUSY` while that many functions have not returned.
+
+Like a server's handler, a posted function has to end when it is interrupted (a blocking call fails once and `CocoShouldStop()` turns true). `Stop()` interrupts it, and so does a shutdown request, functions posted after the request included: they start interrupted, as a `CocoRun` body started after a shutdown request does. The thread itself runs until `Stop()`.
+
+`Stop()` only suspends the calling coroutine; the other coroutines of its thread keep running. It has no timeout: it waits for ever for a function that ignores the interrupt. Functions posted to a thread that never started are destroyed by `Stop()` without running.
 
 Only two things move between threads:
 
-- **Functions**, through `CocoThread::Post()`.
+- **Functions**, through `CocoThread::Post()` and `Call()`. What a function captures moves with it, but what coco made (sockets, connections) still belongs to the thread that made it.
 - **Raw fds**: `TcpConn::Release()` gives up the fd without closing it, and another thread wraps it into its own runtime with `TcpConnFromFd()`. A TLS session cannot change threads, so wrap the `TlsConn` after the move.
 
 Which to use: `CocoRun` for work on one thread; the `threads` option for a server on several cores; `CocoThread` to hand tasks or connections to another thread; plain `std::thread`s, each with its own `CocoRun`, for threads that share nothing. `threads_single`, `threads_server`, `threads_post` and `threads_plain` in `examples/threads/` show the four, printing the thread each step runs on.
@@ -312,7 +341,7 @@ Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`
 src/coco/
 ├── coco.h           umbrella header
 ├── coco_api.h       CocoInit, CocoRun, CocoWaitForShutdown / CocoShutdown, ListenTcp / DialTcp / TcpConnFromFd, ListenUdp / DialUdp, CocoSleepMs, CocoShouldStop
-├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager; CocoThread; shutdown and signals
+├── base/            coroutines: CoCoroutine, ListenRoutine, ConnRoutine, ConnManager; TaskGroup; CocoThread; shutdown and signals
 ├── common/          error codes
 ├── log/             logging
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
