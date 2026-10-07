@@ -4,12 +4,13 @@ English | [中文](README.md)
 
 coco is a C++11 networking library built on [State Threads](https://github.com/hydah/state-threads) (ST). Every connection runs in its own coroutine and you write plain synchronous code: when `Read` has no data, the current coroutine yields, the event loop runs other coroutines, and control comes back once data arrives. No callbacks, no hand-written state machines.
 
-It supports TCP, UDP, TLS, HTTP/1.1, WebSocket and RTMP on Linux (epoll) and macOS (kqueue).
+It supports TCP, UDP, TLS, HTTP/1.1, WebSocket and RTMP, resolves host names with its own DNS resolver inside the coroutine, and runs on Linux (epoll) and macOS (kqueue).
 
 ## Features
 
 - **Synchronous style, asynchronous execution**: one kernel thread per process running many coroutines, 64KB stack each by default.
 - **Protocols**: TCP / UDP, TLS 1.2 / 1.3 (server and client), HTTP/1.1 (keep-alive, chunked, routing), WebSocket (`ws://` and `wss://`, server and client), RTMP (`rtmp://` and `rtmps://`, publish and play).
+- **Name resolution that doesn't stall the thread**: `DialTcp` and every client use the bundled DNS resolver (reads `/etc/resolv.conf` and `/etc/hosts`, asks for A and AAAA together, caches by TTL). Waiting for an answer only suspends the calling coroutine, where `getaddrinfo` would stop the whole thread.
 - **Layered by protocol**: one directory per layer, each depending only on the layers below. HTTP and WebSocket only see a `StreamConn` and don't care whether TCP or TLS is underneath. The layering rule is enforced by a test.
 - **Managed connection lifecycle**: `TcpServer` handles accept, the TLS handshake, connection cleanup and shutdown. You only write a handler function.
 - **Error codes, not exceptions**: every call returns an `int`; `COCO_SUCCESS` is 0.
@@ -258,7 +259,7 @@ Full sources are in [`examples/`](examples).
 
 ## Example programs
 
-Addresses and ports are hardcoded in each `main`; command-line arguments are ignored (except `ws_client`, which accepts a URL).
+Addresses and ports are hardcoded in each `main`; command-line arguments are ignored (except `ws_client`, which accepts a URL, and `lookup`, which takes the host names to resolve).
 
 | Program | Address | Notes |
 | --- | --- | --- |
@@ -266,6 +267,7 @@ Addresses and ports are hardcoded in each `main`; command-line arguments are ign
 | `pingpong_server_udp` / `pingpong_client_udp` | `127.0.0.1:8080` | UDP echo; the server uses `ListenRoutine` directly |
 | `http_server` / `http_client` | `0.0.0.0:9082` | HTTPS; start from `examples/http-server/` so the certificate is found |
 | `ws_server` / `ws_client` | `0.0.0.0:9083/echo` | WebSocket echo; `websocat ws://127.0.0.1:9083/echo` works too |
+| `lookup` | the system's DNS servers | resolves each host name on a coroutine of its own, all at once, e.g. `lookup example.com localhost` |
 | `rtmp_server` | `0.0.0.0:1935/{app}/{stream}` | RTMP live relay: one publisher and any number of players on the same path |
 
 ```bash
@@ -346,7 +348,7 @@ src/coco/
 ├── log/             logging
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
 ├── net/
-│   ├── layer4/      TCP, UDP
+│   ├── layer4/      TCP, UDP, DNS resolution (Resolver, LookupHost)
 │   ├── tls/         TlsConfig, TlsConn, TlsListener, TlsDialer
 │   └── layer7/
 │       ├── http/    messages, HttpServeMux, ServeHttpConn, HttpClient
@@ -364,6 +366,7 @@ The design documents are written in Chinese:
 - [Coroutines and connection management](.harness/docs/coroutine.md): who owns listener and connection coroutines, and how a connection frees itself on its own stack
 - [State Threads and src/coco/base](.harness/docs/st.md): ST context switching, I/O yielding, interruption and exit
 - [TLS handshake and I/O](.harness/docs/tls.md): plugging OpenSSL into coroutine sockets with memory BIOs
+- [Protocol roadmap](.harness/docs/protocols.md): the protocols to add next, in what order, and when each counts as done
 
 ## Tests
 
@@ -373,7 +376,7 @@ cd build && ctest --output-on-failure        # if already built
 ./build/bin/coco_tests ConnStopDoesNotWait   # run a single case
 ```
 
-The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, the blocking `ListenAndServe` and signal shutdown, TLS, WebSocket framing and handshakes, wss, the RTMP handshake and publish/play, and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19340.
+The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, the blocking `ListenAndServe` and signal shutdown, TLS, WebSocket framing and handshakes, wss, the RTMP handshake and publish/play, DNS messages and resolution (against a fake name server on the loopback, never the internet), and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19360.
 
 ## Platforms
 
@@ -389,6 +392,7 @@ Linux ARM64 does not build at the moment: in the bundled State Threads (`thirdpa
 - Single-threaded: ST runs on the thread that set it up (the first one to call into coco), and coco objects must not cross threads; use multiple processes to use multiple cores.
 - TLS does not verify the peer certificate unless the client config calls `TlsConfig::EnablePeerVerification()` (default CA store). `TlsDialer` sends SNI, and checks the hostname when verification is on.
 - No HTTP/2.
+- DNS resolution only uses `/etc/hosts` and the servers in `/etc/resolv.conf`: no other `nsswitch.conf` sources (mDNS, LDAP), no macOS scoped resolvers (VPN split DNS), and no EDNS0 / DNSSEC / DoH.
 - A WebSocket message is capped at 4MB (`MAX_WS_PACKET`).
 - An RTMP message is capped at 16777215 bytes (`kRtmpMaxMessage`). No RTMPE, and aggregate messages are not unpacked.
 

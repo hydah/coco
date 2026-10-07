@@ -5,11 +5,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <vector>
+
 #include "st.h"
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
 #include "coco/log/log.hpp"
+#include "coco/net/layer4/coco_dns.hpp"
 #include "coco/utils/utils.hpp"
 
 namespace coco {
@@ -196,17 +199,11 @@ int CocoSocket::recvfrom(void *buf, int size, ssize_t *nread, struct sockaddr *f
         *nread = nb_read;
     }
 
-    // On success a non-negative integer indicating the number of bytes actually
-    // read is returned (a value of 0 means the network connection is closed or
-    // end of file is reached). Otherwise, a value of -1 is returned and errno is
-    // set to indicate the error.
-    if (nb_read <= 0) {
-        if (nb_read < 0 && errno == ETIME) {
+    // On success the datagram length is returned, including zero for an empty datagram.
+    // Otherwise, -1 is returned and errno is set to indicate the error.
+    if (nb_read < 0) {
+        if (errno == ETIME) {
             return ERROR_SOCKET_TIMEOUT;
-        }
-
-        if (nb_read == 0) {
-            errno = ECONNRESET;
         }
 
         return ERROR_SOCKET_READ;
@@ -369,6 +366,19 @@ int OpenSt(FdGuard *fd, st_netfd_t *stfd) {
 
 }  // namespace
 
+int OpenSocket(int family, int socktype, st_netfd_t *stfd) {
+    int ret = COCO_SUCCESS;
+    if ((ret = CocoInit()) != COCO_SUCCESS) {
+        return ret;
+    }
+    FdGuard fd(socket(family, socktype, 0));
+    if (fd.get() == -1) {
+        coco_error("create socket error. family=%d, type=%d, errno=%d", family, socktype, errno);
+        return ERROR_SOCKET_CREATE;
+    }
+    return OpenSt(&fd, stfd);
+}
+
 int ListenSocket(const std::string &ip, int port, int socktype, st_netfd_t *stfd) {
     int ret = COCO_SUCCESS;
     if ((ret = CocoInit()) != COCO_SUCCESS) {
@@ -422,26 +432,22 @@ int DialStream(const std::string &host, int port, int64_t timeout_us, st_netfd_t
         return ret;
     }
 
-    AddrInfo ai;
-    if ((ret = Resolve(host, port, AF_UNSPEC, SOCK_STREAM, 0, &ai)) != COCO_SUCCESS) {
+    std::vector<IpAddress> addrs;
+    if ((ret = DefaultResolver().LookupIP(host, AF_UNSPEC, &addrs)) != COCO_SUCCESS) {
+        coco_error("resolve %s failed, ret=%d", host.c_str(), ret);
         return ret;
     }
 
     ret = ERROR_ST_CONNECT;
-    for (const addrinfo *r = ai.p; r != nullptr; r = r->ai_next) {
-        FdGuard fd(socket(r->ai_family, r->ai_socktype, r->ai_protocol));
-        if (fd.get() == -1) {
-            coco_error("create socket error. errno=%d", errno);
-            ret = ERROR_SOCKET_CREATE;
-            continue;
-        }
-
+    for (const IpAddress &addr : addrs) {
+        sockaddr_storage sa;
+        socklen_t sa_len = addr.ToSockaddr(port, &sa);
         st_netfd_t s = nullptr;
-        if ((ret = OpenSt(&fd, &s)) != COCO_SUCCESS) {
+        if ((ret = OpenSocket(addr.family, SOCK_STREAM, &s)) != COCO_SUCCESS) {
             continue;
         }
 
-        if (st_connect(s, r->ai_addr, r->ai_addrlen, (st_utime_t)timeout_us) == 0) {
+        if (st_connect(s, (sockaddr *)&sa, sa_len, (st_utime_t)timeout_us) == 0) {
             *stfd = s;
             coco_info("connect ok. server=%s, port=%d", host.c_str(), port);
             return COCO_SUCCESS;
@@ -465,24 +471,15 @@ int DialDatagram(const std::string &host, int port, st_netfd_t *stfd, sockaddr_s
         return ret;
     }
 
-    AddrInfo ai;
-    if ((ret = Resolve(host, port, AF_UNSPEC, SOCK_DGRAM, 0, &ai)) != COCO_SUCCESS) {
+    std::vector<IpAddress> addrs;
+    if ((ret = DefaultResolver().LookupIP(host, AF_UNSPEC, &addrs)) != COCO_SUCCESS) {
+        coco_error("resolve %s failed, ret=%d", host.c_str(), ret);
         return ret;
     }
-    const addrinfo *r = ai.p;
-
-    FdGuard fd(socket(r->ai_family, r->ai_socktype, r->ai_protocol));
-    if (fd.get() == -1) {
-        coco_error("create socket error. errno=%d", errno);
-        return ERROR_SOCKET_CREATE;
-    }
-    if ((ret = OpenSt(&fd, stfd)) != COCO_SUCCESS) {
+    if ((ret = OpenSocket(addrs[0].family, SOCK_DGRAM, stfd)) != COCO_SUCCESS) {
         return ret;
     }
-
-    assert(r->ai_addrlen <= sizeof(*peer));
-    memcpy(peer, r->ai_addr, r->ai_addrlen);
-    *peer_len = r->ai_addrlen;
+    *peer_len = addrs[0].ToSockaddr(port, peer);
     return ret;
 }
 

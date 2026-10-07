@@ -56,15 +56,18 @@ class CocoSocket : public IoReaderWriter {
     OwnerThread owner_;
 };
 
+// Opens an unbound, unconnected socket. On success *stfd owns the fd.
+int OpenSocket(int family, int socktype, st_netfd_t *stfd);
+
 // Binds a socket of socktype (SOCK_STREAM or SOCK_DGRAM) to ip:port, which must be an IP
 // literal; a stream socket also listens. On success *stfd owns the fd.
 int ListenSocket(const std::string &ip, int port, int socktype, st_netfd_t *stfd);
 
-// Resolves host and connects a stream socket to the first address that accepts within
-// timeout_us per attempt. On success *stfd owns the fd.
+// Resolves host with DefaultResolver() and connects a stream socket to the first address
+// that accepts within timeout_us per attempt. On success *stfd owns the fd.
 int DialStream(const std::string &host, int port, int64_t timeout_us, st_netfd_t *stfd);
 
-// Resolves host and opens an unconnected datagram socket of the matching family; *peer
+// Resolves host with DefaultResolver() and opens an unconnected datagram socket of the matching family; *peer
 // gets the address to send to. On success *stfd owns the fd.
 int DialDatagram(const std::string &host, int port, st_netfd_t *stfd, sockaddr_storage *peer,
                  socklen_t *peer_len);

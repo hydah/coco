@@ -1,6 +1,6 @@
 # 架构
 
-coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。支持的协议是 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP。
+coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。支持的协议是 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由 layer4 里的 DNS 解析器解析。接下来要加的协议见 [协议规划](protocols.md)。
 
 源码按协议分层组织：每一层一个目录，只能依赖它下面的层。想看哪个协议，就打开哪个目录。对外只有一个库 `libcoco`，所有名字在 `namespace coco` 里。
 
@@ -28,7 +28,7 @@ src/coco/
 ├── utils/                     io.hpp（IoReader / IoWriter）、BufReader；内部：地址、base64/sha1/md5
 ├── net/
 │   ├── coco_socket.hpp/.cpp   拥有 st_netfd 的 CocoSocket：超时和错误码；建 socket、bind、connect
-│   ├── layer4/                传输层：StreamConn / StreamListener / DatagramConn 接口，TCP、UDP 实现
+│   ├── layer4/                传输层：StreamConn / StreamListener / DatagramConn 接口，TCP、UDP 实现；DNS（编解码 dns_message，解析器 coco_dns）
 │   ├── tls/                   安全层：TlsConfig、TlsConn、TlsListener、TlsDialer
 │   └── layer7/                应用层，每个协议一个目录
 │       ├── http/              编解码 http_*.h（头部与工具、报文与 body、HttpResponseWriter、HttpServeMux）；会话 coco_http（ServeHttpConn、HttpClient）
@@ -41,7 +41,7 @@ src/coco/
 
 `StreamConn` / `StreamListener` / `DatagramConn` 在 `net/layer4/coco_layer4.hpp`，都是纯接口，不含 fd。`TcpConn` / `TcpListener` 在 `coco_tcp.hpp`，`UdpConn` / `UdpListener` 在 `coco_udp.hpp`，它们各自持有一个 `CocoSocket`，析构时关闭 fd。`TlsConn` 在 `net/tls/coco_tls.hpp`，它拥有一条下层 `StreamConn`，自己不碰 fd。协程 ID 放在 `base/coroutine.hpp` 的 `CoroutineContext` 里。
 
-`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp` 返回错误码，成功时通过 `std::unique_ptr` 出参交出新连接。`DialTcp` 依次尝试解析出的每个地址。`StreamDialer` 是「给 host:port 建一条 `StreamConn`」的函数类型，`TcpDialer()` 用 `DialTcp` 实现它，`TlsDialer()` 在另一个 dialer 之上做 TLS 握手。
+`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp` 返回错误码，成功时通过 `std::unique_ptr` 出参交出新连接。`DialTcp` / `DialUdp` 用本线程的 `DefaultResolver()` 解析主机名（见下文“协议”里的 DNS），`DialTcp` 依次尝试解析出的每个地址，IPv4 在前。监听地址必须是 IP 字面量，不经过解析。`StreamDialer` 是「给 host:port 建一条 `StreamConn`」的函数类型，`TcpDialer()` 用 `DialTcp` 实现它，`TlsDialer()` 在另一个 dialer 之上做 TLS 握手。
 
 ## 分层
 
@@ -117,6 +117,13 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
 ## 协议
 
 - **TCP / UDP**：`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp`。
+- **DNS**：在 `src/coco/net/layer4/`。原来解析用 `getaddrinfo`，它是阻塞的系统调用，解析期间整条 ST 线程停住；现在 `Resolver` 自己发查询，等应答时只让出当前协程。
+  - 顺序：IP 字面量（也接受带方括号的 IPv6 和 `%zone`）原样返回；然后查 hosts 文件；`localhost` 和 `*.localhost` 不在 hosts 里时固定是 127.0.0.1 / ::1（RFC 6761），不问服务器，免得 search 后缀把它变成别人的域名；最后按 resolv.conf 的规则生成候选名：结尾带点的只查它自己，点数不少于 `ndots` 的先查原名再加 search 后缀，否则先加后缀、原名放最后。
+  - 查询：每个候选名把 A 和 AAAA 从同一个 UDP socket 一起发出（`AF_INET` / `AF_INET6` 只发一个），ID 随机，源端口由内核随机分配。只接受来自所问服务器地址和端口（IPv6 还比较 scope ID）、ID 和问题都对得上、opcode 为 QUERY 且只有一个问题的应答，其余的丢掉继续等。标签内不能含点或 NUL，名字解压最多迭代 255 次。应答带 TC 位时，在 `TaskGroup` 子协程里对同一服务器改用 TCP（2 字节长度前缀）重问，另一类记录的 UDP 应答仍可处理；TCP 应答仍带 TC 时不算成功，也不缓存。SERVFAIL、REFUSED、发送失败转下一个服务器；NXDOMAIN 和“有这个名字但没有这种记录”都算有结论。每个服务器共用一个由 `timeout_us` 确定的绝对截止时间，TCP 的每次读取都受它约束，整个列表最多过 `attempts` 遍。
+  - 结果：只取问题名以及从它出发的 CNAME 链上的名字拥有的记录，别的名字的记录忽略，CNAME 成环则报错；`AF_UNSPEC` 时 IPv4 在前。成功的结果按 TTL 缓存（最多一小时，最多 4096 条），有效期从收到应答时起算，等待另一类记录的时间也计入 TTL；失败不缓存。
+  - 配置：`Resolver()` 跟随 `/etc/resolv.conf`（`nameserver`、`domain`、`search`、`options ndots / timeout / attempts`）和 `/etc/hosts`，最多每 5 秒按 mtime（含纳秒）、大小、inode 检查一次是否变了，resolv.conf 变了就清缓存，使用旧配置快照的在途查询也不能把结果写回缓存。没有 `nameserver` 时用 127.0.0.1 和 ::1。读这两个文件是普通文件 I/O，没走协程。`Resolver(DnsConfig)` 用给定的配置，不读文件，测试就是这样把它指向本机的假服务器。
+  - 线程：`Resolver` 属于创建它的线程，同一线程上的多条协程可以同时用它；正在等服务器的查询持有开始时的配置和 hosts 的 `shared_ptr`，期间别的协程重新加载文件也不影响它。`DefaultResolver()` 每个线程一个，不销毁。协程被中断时先取消并等待所有 TCP 子任务结束，再返回 `ERROR_THREAD_INTERRUPED`；即使中断恰逢最后一个任务结束，任务组等待也会记录取消状态。
+  - 不做的：EDNS0、DNSSEC、DoT / DoH、`nsswitch.conf` 里其他来源（mDNS 的 `.local`、LDAP）、macOS 的分域解析（`scutil --dns` 里按域名指定服务器的 resolver，VPN 常用）、IDN，以及同一线程上对同一名字的并发查询合并。
 - **TLS**：服务端和客户端都有，可以套在任何 `StreamConn` 上。`TlsConfig` 共享 `SSL_CTX`，证书只加载一次。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
 - **HTTP/1.1**：接口仿照 Go 的 `net/http`。
   - 服务端：处理函数是 `HttpHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r)`，或者用 `HandleFunc` 注册 lambda。`HttpServeMux` 支持 Go 1.22 的模式语法：可带方法（`"GET /users/{id}"`，GET 也接 HEAD）、主机、`{name}` 单段通配、`{name...}` 尾段、以 `/` 结尾的子树和 `{$}`。路由是按路径段建的树，越具体越优先：字面段优先于 `{name}`，再优先于子树；带方法的优先于不带方法的。和 Go 一样，不带方法的模式接受任何方法；只有路径匹配而所有模式的方法都不匹配时才回 405 和 `Allow`。含 `.`、`..`、`//` 的路径先 301 到规范形式；注册了 `/tree/` 而没有模式精确匹配 `/tree` 时，`/tree` 301 到 `/tree/`。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` / `ListenAndServeTLS` 一直服务到 `Stop()` 或退出请求，`Start` / `StartTLS` 开始服务后立即返回；HTTPS 由 `TcpServer` 的 `TlsListener` 提供，`ServeHttpConn` 第一次读请求时完成握手。
@@ -142,9 +149,10 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
 | 4041–4045 | TLS | `ERROR_HTTPS_HANDSHAKE` 4042 |
 | 4051–4053 | WebSocket | `ERROR_WS_PROTOCOL` 4051，`ERROR_WS_MESSAGE_TOO_LARGE` 4052 |
 | 4061–4065 | RTMP          | `ERROR_RTMP_HANDSHAKE` 4062，`ERROR_RTMP_MESSAGE_TOO_LARGE` 4063 |
+| 4071–4075 | DNS | `ERROR_DNS_NOT_FOUND` 4071，`ERROR_DNS_TIMEOUT` 4075 |
 
 文件里还有一批系统错误码（pid 文件、带宽限制等），当前网络路径不会返回它们。
 
 ## 示例与测试
 
-`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`thread_test.cpp` 覆盖两个线程各跑一套运行时、`CocoThread` 的投递 / 中断 / 停止（`Stop()` 只挂起调用方、并发 `Stop()`、退出请求中断投递的函数）、从普通线程调用 `CocoShutdown()`、fd 在线程之间交接，以及多线程的 `TcpServer`（按负载分配、TLS、退出请求、只接受 `TcpListener`）和 `HttpServer`；`task_group_test.cpp` 覆盖 `TaskGroup` 的等待、首个错误、取消（含取消后才起的函数）、析构时取消并等待、等待方被中断时取消整组（包括 `CocoRun` 主体收到退出请求），`CocoYield()` 让停止请求进入不做 I/O 的循环，以及 `CocoThread` 的 `Call()`（从协程和普通线程）、负载上限、未启动就 `Stop()` 时丢弃排队的函数、退出请求之后投递的函数一启动就是中断状态；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、别的线程有自己的运行时、调试构建里跨线程使用对象会断言失败、`SIGTERM` 让多线程服务以状态 0 退出、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发，以及 `threads/` 下对照单线程、多线程服务器、`CocoThread` 和普通线程的四个程序）用来手动验证。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`thread_test.cpp` 覆盖两个线程各跑一套运行时、`CocoThread` 的投递 / 中断 / 停止（`Stop()` 只挂起调用方、并发 `Stop()`、退出请求中断投递的函数）、从普通线程调用 `CocoShutdown()`、fd 在线程之间交接，以及多线程的 `TcpServer`（按负载分配、TLS、退出请求、只接受 `TcpListener`）和 `HttpServer`；`task_group_test.cpp` 覆盖 `TaskGroup` 的等待、首个错误、取消（含取消后才起的函数）、析构时取消并等待、等待方被中断时取消整组（包括 `CocoRun` 主体收到退出请求），`CocoYield()` 让停止请求进入不做 I/O 的循环，以及 `CocoThread` 的 `Call()`（从协程和普通线程）、负载上限、未启动就 `Stop()` 时丢弃排队的函数、退出请求之后投递的函数一启动就是中断状态；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、别的线程有自己的运行时、调试构建里跨线程使用对象会断言失败、`SIGTERM` 让多线程服务以状态 0 退出、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`dns_test.cpp` 覆盖 DNS 报文的编解码（压缩指针、指针成环和向前指、超长名字、任意截断、opcode / 问题数 / 标签校验、解压迭代上限）、resolv.conf 和 hosts 的解析、字面量 / hosts / localhost，以及对着同一线程上一个假 DNS 服务器的查询：A 和 AAAA 一起发、缓存及 TTL 从应答到达起算、配置重载后旧查询不回填缓存、CNAME 链之外的记录被忽略和成环报错、search 列表的顺序、SERVFAIL 转下一个服务器、丢包重试和超时、伪造的应答（含 IPv6 scope 不符）被忽略、截断后改用 TCP（慢 TCP 不挡 UDP 应答、逐段读取共用截止时间、仍带 TC 被拒绝）、查询期间别的协程照常运行、被中断时取消并等待 TCP 子任务结束，以及 `DialTcp("localhost")`。这些用例不访问外网。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发、`dns/lookup` 并发解析主机名，以及 `threads/` 下对照单线程、多线程服务器、`CocoThread` 和普通线程的四个程序）用来手动验证。

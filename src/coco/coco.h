@@ -9,6 +9,7 @@
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
 #include "coco/log/log.hpp"
+#include "coco/net/layer4/coco_dns.hpp"
 #include "coco/net/layer4/coco_tcp.hpp"
 #include "coco/net/layer4/coco_udp.hpp"
 #include "coco/net/layer7/http/coco_http.hpp"

@@ -4,12 +4,13 @@
 
 coco 是一个基于 [State Threads](https://github.com/hydah/state-threads)（ST）的 C++11 网络库。每条连接跑在自己的协程里，代码按同步方式写：`Read` 没有数据时，当前协程让出，事件循环去跑别的协程，数据到了再切回来。不需要回调，也不需要手写状态机。
 
-支持 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，运行在 Linux（epoll）和 macOS（kqueue）上。
+支持 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由自带的 DNS 解析器在协程里解析，运行在 Linux（epoll）和 macOS（kqueue）上。
 
 ## 特性
 
 - **同步写法，异步执行**：一个进程一个内核线程，上面跑多条协程，默认栈 64KB。
 - **协议齐全**：TCP / UDP、TLS 1.2 / 1.3（服务端和客户端）、HTTP/1.1（keep-alive、chunked、路由）、WebSocket（`ws://` 和 `wss://`，服务端和客户端）、RTMP（`rtmp://` 和 `rtmps://`，推流和拉流）。
+- **解析域名不卡线程**：`DialTcp` 和各个客户端用自带的 DNS 解析器（读 `/etc/resolv.conf` 和 `/etc/hosts`，A / AAAA 同时查，按 TTL 缓存），等待应答时只让出当前协程，不像 `getaddrinfo` 那样让整个线程停住。
 - **按协议分层**：每层一个目录，只能依赖下层。HTTP 和 WebSocket 只认 `StreamConn`，不关心下面是 TCP 还是 TLS。分层规则由测试强制检查。
 - **连接生命周期由框架管理**：`TcpServer` 负责 accept、TLS 握手、连接回收和关停，业务只写一个处理函数。
 - **错误码而非异常**：所有接口返回 `int`，`COCO_SUCCESS` 为 0。
@@ -258,7 +259,7 @@ pub.WriteMessage(msg);
 
 ## 示例程序
 
-示例的地址和端口写死在各自的 `main` 里，不读命令行参数（`ws_client` 除外，可以传 URL）。
+示例的地址和端口写死在各自的 `main` 里，不读命令行参数（`ws_client` 可以传 URL，`lookup` 传要解析的主机名）。
 
 | 程序 | 地址 | 说明 |
 | --- | --- | --- |
@@ -267,6 +268,7 @@ pub.WriteMessage(msg);
 | `http_server` / `http_client` | `0.0.0.0:9082` | HTTPS，需在 `examples/http-server/` 下启动以读到证书 |
 | `ws_server` / `ws_client` | `0.0.0.0:9083/echo` | WebSocket 回显，也可以用 `websocat ws://127.0.0.1:9083/echo` 测 |
 | `rtmp_server` | `0.0.0.0:1935/{app}/{stream}` | RTMP 直播转发，同一路径上一个推流、多个拉流 |
+| `lookup` | 系统配置的 DNS 服务器 | 每个主机名一条协程，同时解析，例如 `lookup example.com localhost` |
 
 ```bash
 cd examples/http-server
@@ -346,7 +348,7 @@ src/coco/
 ├── log/             日志
 ├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5
 ├── net/
-│   ├── layer4/      TCP、UDP
+│   ├── layer4/      TCP、UDP、DNS 解析（Resolver、LookupHost）
 │   ├── tls/         TlsConfig、TlsConn、TlsListener、TlsDialer
 │   └── layer7/
 │       ├── http/    报文、HttpServeMux、ServeHttpConn、HttpClient
@@ -362,6 +364,7 @@ src/coco/
 - [协程与连接管理](.harness/docs/coroutine.md)：监听协程和连接协程的所有权，连接如何在自己的栈上释放自己
 - [State Threads 与 src/coco/base 的实现](.harness/docs/st.md)：ST 的切换、I/O 让出、中断与退出
 - [TLS 握手与读写](.harness/docs/tls.md)：用内存 BIO 把 OpenSSL 接进协程 socket
+- [协议规划](.harness/docs/protocols.md)：接下来要加的协议、顺序和完成标准
 
 ## 测试
 
@@ -371,7 +374,7 @@ cd build && ctest --output-on-failure        # 已构建时直接跑
 ./build/bin/coco_tests ConnStopDoesNotWait   # 单独跑一个用例
 ```
 
-测试不依赖外部框架，每个用例是一个独立进程，超时 10 秒。覆盖协程与连接生命周期、`TcpServer` 关停、阻塞式 `ListenAndServe` 与信号退出、TLS、WebSocket 帧编解码和握手、wss、RTMP 握手与推拉流，以及分层依赖检查。用例会占用 `127.0.0.1` 的 19181–19340 端口。
+测试不依赖外部框架，每个用例是一个独立进程，超时 10 秒。覆盖协程与连接生命周期、`TcpServer` 关停、阻塞式 `ListenAndServe` 与信号退出、TLS、WebSocket 帧编解码和握手、wss、RTMP 握手与推拉流、DNS 报文与解析（对着本机的假 DNS 服务器，不访问外网），以及分层依赖检查。用例会占用 `127.0.0.1` 的 19181–19360 端口。
 
 ## 平台
 
@@ -387,6 +390,7 @@ Linux ARM64 目前不能编译：自带的 State Threads（`thirdparty/st`）的
 - 单线程：ST 跑在初始化它的线程上（第一次调用 coco 的线程），coco 的对象都不能跨线程使用；要用多核需要多进程。
 - TLS 默认不校验对端证书（`SSL_VERIFY_NONE`）。客户端配置可调用 `TlsConfig::EnablePeerVerification()`，按默认 CA 校验证书；`TlsDialer` 会发送 SNI，并在开启校验时核对主机名。
 - 不支持 HTTP/2。
+- DNS 解析只看 `/etc/hosts` 和 `/etc/resolv.conf` 里的服务器：不走 `nsswitch.conf` 的其他来源（mDNS、LDAP），macOS 上不认 VPN 的分域解析（scoped resolver），也没有 EDNS0 / DNSSEC / DoH。
 - WebSocket 单条消息上限 4MB（`MAX_WS_PACKET`）。
 - RTMP 单条消息上限 16777215 字节（`kRtmpMaxMessage`）。没有 RTMPE，也不拆 aggregate 消息。
 

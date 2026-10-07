@@ -146,6 +146,16 @@ COTEST(TaskGroupWaitCancelsWhenInterrupted) {
     st_thread_join(waiter, nullptr);
     CHECK(finished);
     CHECK_EQ(ret, ERROR_THREAD_INTERRUPED);
+
+    TaskGroup tasks;
+    st_thread_t parent = st_thread_self();
+    CHECK_EQ(tasks.Spawn([parent]() {
+                 st_thread_interrupt(parent);
+                 return COCO_SUCCESS;
+             }),
+             COCO_SUCCESS);
+    CHECK_EQ(tasks.Wait(), COCO_SUCCESS);
+    CHECK(tasks.Cancelled());
 }
 
 // A shutdown stops a CocoRun() body waiting on a group, and through it the group.

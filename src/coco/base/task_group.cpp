@@ -98,6 +98,9 @@ int TaskGroup::Wait() {
             stop = true;
         }
     }
+    if (stop && !cancelled_) {
+        Cancel();
+    }
     return err_;
 }
 

@@ -125,6 +125,16 @@ constexpr int ERROR_RTMP_HANDSHAKE = 4062;
 constexpr int ERROR_RTMP_MESSAGE_TOO_LARGE = 4063;
 constexpr int ERROR_RTMP_AMF = 4064;
 constexpr int ERROR_RTMP_URL = 4065;
+// the name does not exist (NXDOMAIN), or has no address of the requested family.
+constexpr int ERROR_DNS_NOT_FOUND = 4071;
+// every name server failed the query (SERVFAIL, REFUSED or another error code).
+constexpr int ERROR_DNS_SERVER = 4072;
+// a malformed DNS message.
+constexpr int ERROR_DNS_PROTOCOL = 4073;
+// the host is not a valid domain name.
+constexpr int ERROR_DNS_BAD_NAME = 4074;
+// no name server answered within the timeout and attempts.
+constexpr int ERROR_DNS_TIMEOUT = 4075;
 
 bool coco_is_client_gracefully_close(int error_code);
 

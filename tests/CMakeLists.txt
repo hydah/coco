@@ -11,6 +11,7 @@ add_executable(coco_tests
     rtmp_test.cpp
     thread_test.cpp
     task_group_test.cpp
+    dns_test.cpp
 )
 # The tests call ST directly. They only take its header: a static libcoco brings libst.a
 # along, and a shared one contains it, so linking st here would make a second scheduler.
@@ -151,6 +152,24 @@ set(COCO_TEST_CASES
     CocoThreadCallFromPlainThreadAndNeverStarted
     CocoThreadMaxLoad
     CocoThreadPostAfterShutdownStartsInterrupted
+    DnsQueryRoundTrip
+    DnsDecodeAnswers
+    DnsDecodeRejectsMalformed
+    DnsParsesConfigFiles
+    DnsLiteralsAndHosts
+    DnsResolverAsksServerAndCaches
+    DnsResolverFollowsCnameOnly
+    DnsResolverSearchList
+    DnsResolverServerFailures
+    DnsResolverRetriesThenTimesOut
+    DnsResolverIgnoresForgedReplies
+    DnsResolverFallsBackToTcp
+    DnsResolverTcpUsesTotalDeadline
+    DnsResolverKeepsUdpSiblingDuringTcpFallback
+    DnsResolverExpiresTtlWhileSiblingPending
+    DnsLookupDoesNotBlockTheThread
+    DnsLookupStopsWhenInterrupted
+    DnsDialTcpByName
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})
