@@ -1,8 +1,8 @@
 # 架构
 
-coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。支持的协议是 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由 layer4 里的 DNS 解析器解析。接下来要加的协议见 [协议规划](protocols.md)。
+coco 是基于 State Threads 的 C++11 网络库，接口写成同步调用，阻塞发生在 ST 的读写上，由协程让出。支持的协议是 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由 net 里的 DNS 解析器解析。接下来要加的协议见 [协议规划](protocols.md)。
 
-源码按协议分层组织：每一层一个目录，只能依赖它下面的层。想看哪个协议，就打开哪个目录。对外只有一个库 `libcoco`，所有名字在 `namespace coco` 里。
+网络代码分成两个目录，划分只看一个问题：它是不是在帮你拿到一条字节流（`StreamConn`）。是的放 `net/`：TCP、UDP、拨号和监听、`TcpServer` 的接受循环，以及 `net/dns/`（`DialTcp("host")` 要先解析主机名）和 `net/tls/`（把一条字节流变成加密的另一条，`TlsDialer` 和 `TcpDialer` 是同一类东西）。在字节流上说话的应用层协议放 `app/`：HTTP、WebSocket、RTMP 各一个目录，想看哪个协议，就打开哪个目录，目录里再按 codec、会话、服务器分层。哪个路径属于哪一层、能依赖谁，写在 `cmake/check_layers.cmake` 里。对外只有一个库 `libcoco`，所有名字在 `namespace coco` 里。
 
 协程调度和连接回收见 [协程与连接管理](coroutine.md)。TLS 记录如何进出协程套接字见 [TLS 握手与读写](tls.md)。
 
@@ -26,52 +26,88 @@ src/coco/
 ├── common/error.hpp           错误码
 ├── log/
 ├── utils/                     io.hpp（IoReader / IoWriter）、BufReader；内部：地址、base64/sha1/md5
-├── net/
-│   ├── coco_socket.hpp/.cpp   拥有 st_netfd 的 CocoSocket：超时和错误码；建 socket、bind、connect
-│   ├── layer4/                传输层：StreamConn / StreamListener / DatagramConn 接口，TCP、UDP 实现；DNS（编解码 dns_message，解析器 coco_dns）
-│   ├── tls/                   安全层：TlsConfig、TlsConn、TlsListener、TlsDialer
-│   └── layer7/                应用层，每个协议一个目录
-│       ├── http/              编解码 http_*.h（头部与工具、报文与 body、HttpResponseWriter、HttpServeMux）；会话 coco_http（ServeHttpConn、HttpClient）
-│       ├── ws/                编解码 ws_frame（帧头、WebSocketFrameDecoder）；会话 coco_ws（WebSocketConn、WebSocketClient、WebSocketHandler）
-│       └── rtmp/              握手、chunk、AMF0；会话 coco_rtmp（RtmpConn、RtmpClient、ServeRtmpConn）
-└── server/                    服务运行框架：TcpServer，以及用它组装的 HttpServer、RtmpServer
+├── net/                       拿到字节流
+│   ├── conn.hpp               StreamConn / StreamListener / DatagramConn 接口，StreamDialer、StreamHandler
+│   ├── socket.hpp             拥有 st_netfd 的 CocoSocket：超时和错误码；建 socket、bind、connect
+│   ├── tcp.hpp  udp.hpp       TcpConn / TcpListener / TcpDialer，UdpConn / UdpListener
+│   ├── tcp_server.hpp         TcpServer：accept 循环、每条连接一个协程、worker 线程、关停
+│   ├── dns/
+│   │   ├── codec/             message（RFC 1035 报文）、config（IpAddress、resolv.conf、hosts）、answer（从应答取地址）
+│   │   └── resolver.hpp       Resolver：协程化的 UDP / TCP 查询、重试、缓存；LookupHost
+│   └── tls/                   config（TlsConfig）；conn（TlsConn、TlsDialer、TlsListener、TlsHandler）
+└── app/                       在字节流上说话的应用层协议
+    ├── http/
+    │   ├── codec/             basic（状态码、方法、HttpHeader、HttpValues、转义）、message（HttpRequest / HttpResponse、解析、body 分帧）、
+    │   │                      response（状态行、chunk 头、Date）、url（客户端 URL、重定向）
+    │   ├── handler.hpp        HttpHandler、HttpError / HttpNotFound / HttpRedirect
+    │   ├── response_writer.hpp HttpResponseWriter
+    │   ├── mux.hpp            HttpServeMux
+    │   ├── client.hpp         HttpClient、连接池
+    │   └── server.hpp         ServeHttpConn、HttpServeOptions；HttpServer
+    ├── ws/
+    │   ├── codec/             frame（帧头、WebSocketFrameDecoder）、handshake（URL、Sec-WebSocket-Key / Accept）
+    │   ├── conn.hpp           WebSocketConn
+    │   ├── client.hpp         WebSocketClient
+    │   └── handler.hpp        WebSocketHandler
+    └── rtmp/
+        ├── codec/             handshake、chunk、amf0、bytes、command（命令的解析和构造）、url（ParseRtmpUrl）
+        ├── conn.hpp           RtmpConn
+        ├── client.hpp         RtmpClient
+        └── server.hpp         ServeRtmpConn、RtmpRequest、RtmpHandler；RtmpServer
 ```
 
-每个协议目录里分两种文件。编解码只做字节和报文之间的转换，不碰连接；会话在一条 `StreamConn` 上驱动编解码，负责读写和状态。
+一个协议的代码都在它自己的目录里，目录内部从下往上分三层，读一个协议也按这个顺序：
 
-`StreamConn` / `StreamListener` / `DatagramConn` 在 `net/layer4/coco_layer4.hpp`，都是纯接口，不含 fd。`TcpConn` / `TcpListener` 在 `coco_tcp.hpp`，`UdpConn` / `UdpListener` 在 `coco_udp.hpp`，它们各自持有一个 `CocoSocket`，析构时关闭 fd。`TlsConn` 在 `net/tls/coco_tls.hpp`，它拥有一条下层 `StreamConn`，自己不碰 fd。协程 ID 放在 `base/coroutine.hpp` 的 `CoroutineContext` 里。
+1. `codec/`：协议本身，不碰连接和协程，所以用一段内存里的字节就能测。大部分是字节和报文之间的转换；需要读写的（RTMP 握手和 chunk、HTTP body）只经过 `IoReader` / `IoWriter` / `BufReader` 接口。DNS 的 `config`（resolv.conf、hosts、地址字面量）也在这里：它只解析文本，不读文件。
+2. 目录里的其余文件是会话：在一条 `StreamConn` 上驱动 codec，负责读写、状态和超时。
+3. `server.hpp`：先是在一条连接上服务的函数（`ServeHttpConn`、`ServeRtmpConn`），再是用 `TcpServer` 把它组装成服务的 `HttpServer`、`RtmpServer`，加载证书、套 `TlsHandler()` 也在这里。和 Go 的 `net/http/server.go` 一样，`Server` 和逐连接的 `(*conn).serve` 放在同一个文件。
 
-`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp` 返回错误码，成功时通过 `std::unique_ptr` 出参交出新连接。`DialTcp` / `DialUdp` 用本线程的 `DefaultResolver()` 解析主机名（见下文“协议”里的 DNS），`DialTcp` 依次尝试解析出的每个地址，IPv4 在前。监听地址必须是 IP 字面量，不经过解析。`StreamDialer` 是「给 host:port 建一条 `StreamConn`」的函数类型，`TcpDialer()` 用 `DialTcp` 实现它，`TlsDialer()` 在另一个 dialer 之上做 TLS 握手。
+文件名只说明角色，不重复目录名或库名，所以 `app/http/server.hpp` 是 `HttpServer`，`app/rtmp/conn.hpp` 是 `RtmpConn`。
+
+`HttpResponse` 是 codec 只用前置声明、不 include 连接的一个例外：它由 `codec/message` 里的解析器填写，声明也在那里，但它为客户端持有连接，和连接有关的成员（`Conn()`、`Reader()`、析构时回连接池）实现在 `app/http/client.cpp`。`HttpResponseWriter` 决定 Content-Length、chunked 还是关闭连接时要看请求和处理函数写了多少，所以留在会话里，只把状态行、chunk 头和 Date 的格式化放进 codec。
+
+`StreamConn` / `StreamListener` / `DatagramConn` 在 `net/conn.hpp`，都是纯接口，不含 fd。`TcpConn` / `TcpListener` 在 `net/tcp.hpp`，`UdpConn` / `UdpListener` 在 `net/udp.hpp`，它们各自持有一个 `CocoSocket`，析构时关闭 fd。`TlsConn` 在 `net/tls/conn.hpp`，它拥有一条下层 `StreamConn`，自己不碰 fd。协程 ID 放在 `base/coroutine.hpp` 的 `CoroutineContext` 里。
+
+`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp` 返回错误码，成功时通过 `std::unique_ptr` 出参交出新连接。`DialTcp` / `DialUdp` 用本线程的 `DefaultResolver()` 解析主机名（见下文“协议”里的 DNS），`DialTcp` 依次尝试解析出的每个地址，IPv4 在前。监听地址必须是 IP 字面量，不经过解析。`StreamDialer` 是「给 host:port 建一条 `StreamConn`」的函数类型，`TcpDialer()` 用 `DialTcp` 实现它，`TlsDialer()` 在另一个 dialer 之上做 TLS 握手。`StreamHandler` 是「服务一条 `StreamConn`」的函数类型，`TcpServer` 对每条连接调用它；它可以一层套一层，像 Go 的 http middleware：`TlsHandler(cfg, next)` 先握手，再把 TLS 上的明文连接交给 `next`。
 
 ## 分层
 
 ```text
-server     TcpServer、HttpServer、RtmpServer   组装：accept 循环 + 可选 TLS + 协议处理函数
-layer7  |  HTTP、WebSocket、RTMP               只认 StreamConn 和 StreamDialer，不知道下面是 TCP 还是 TLS
-tls     |  TlsConn、TlsListener、TlsDialer      把一个 StreamConn 包成另一个 StreamConn
-layer4     StreamConn 等接口；TcpConn、UdpConn  st_read / st_write / st_accept
-core       协程、日志、错误码、工具             st_thread_create
+server     HttpServer、RtmpServer（server.*）       Serve 函数，以及组装：TcpServer + 可选 TlsHandler
+app     |  app/ 下 HTTP、WebSocket、RTMP 的会话      只认 StreamConn 和 StreamDialer，不知道下面是 TCP 还是 TLS
+tls     |  net/tls/：TlsConn、TlsDialer、TlsHandler  把一个 StreamConn 包成另一个 StreamConn
+net        net/ 的其余部分：接口、TCP、UDP、TcpServer、DNS 解析器    st_read / st_write / st_accept
+codec      各协议的 codec/                            协议本身，不碰连接和协程
+core       协程、日志、错误码、工具                   st_thread_create
 ```
 
-`layer7` 和 `tls` 平级，互不依赖，都只依赖 `layer4`，由 `server` 或调用方组合。HTTP 和 WebSocket 的客户端不自己建连，而是调用注入的 `StreamDialer`（`layer4` 里的函数类型）：默认 `TcpDialer()`，https / wss 传 `TlsDialer()`。所以 `layer7` 的代码里没有 OpenSSL，`tls` 也可以套在任何能产出 `StreamConn` 的东西上。
+`tls` 放在 `net/tls/` 目录里，但在分层上比 `net` 的其余部分高一层：`TcpServer`、socket、DNS 都不能 include 它。`app` 和 `tls` 平级，互不依赖，都只依赖 `net`，由各协议的 `server.*` 或调用方组合。这和 Go 一样：`net` 只有连接、监听和拨号，`crypto/tls` 在它上面把一条连接包成另一条，`net/http` 再决定什么时候用 TLS。HTTP 和 WebSocket 的客户端不自己建连，而是调用注入的 `StreamDialer`：默认 `TcpDialer()`，https / wss 传 `TlsDialer()`（对应 Go 的 `tls.Dialer`）。服务端：`TcpServer` 不认识 TLS，只对每条连接调用处理函数；`HttpServer::ListenAndServeTLS` 加载证书后把处理函数换成 `TlsHandler(cfg, ServeHttpConn…)`，对应 Go 的 `(*conn).serve` 一开始先 `tlsConn.Handshake()`。所以 OpenSSL 只出现在 `net/tls/` 里，`app` 和 `net` 的其余部分都没有；`tls` 也可以套在任何能产出 `StreamConn` 的东西上。Go 把 tls 放在 `crypto/` 下是标准库打包的历史原因，coco 没有别的密码学代码，按职责放进 `net`。
 
-规则：一个文件只能 include 同一层或层号更低的头文件；层号相同但层名不同的平级层（`layer7` 和 `tls`）互相不能 include。`layer7` 下的协议之间默认也互不依赖，目前唯一的例外是 `ws` 可以用 `http`，因为 WebSocket 通过 HTTP Upgrade 建立。
+Go 服务端用 `tls.NewListener` 包住监听；coco 也有对应的 `TlsListener`，单线程时可以传给 `Serve`。但 `TcpServerOptions::threads` 大于 1 时，监听线程要把原始 fd 交给 worker，而 `TlsConn` 里的 ST 锁属于建它的线程、不能跨线程，所以握手必须在 worker 上做。`TlsHandler` 正是在连接自己的协程（也就是 worker）上运行，单线程和多线程都适用，`HttpServer` / `RtmpServer` 因此用它。
 
-这些规则由 ctest 里的 `LayerDependencies` 用例检查。它运行 `cmake/check_layers.cmake`，扫描 `src/` 下每一条 `#include "..."`，发现向上或跨平级层的依赖就列出违规的文件并失败。层号和 `layer7` 内允许的依赖都写在这个脚本开头。
+规则：
 
-各层对应的目录：
+- 一个文件只能 include 同一层或层号更低的头文件；层号相同但层名不同的平级层（`app` 和 `tls`）互相不能 include。
+- codec 还不能 include `base/`、`coco/coco_api.h` 和 `st.h`：协议本身不碰协程。它可以打日志、用 `utils/` 的 `IoReader` / `IoWriter`、`BufReader`。
+- 库里的文件不能 include 汇总头文件 `coco/coco.h`，它包含所有层，会绕过上面的规则。
+- 协议之间默认互不依赖，一个协议的 codec 也只给本协议用：`rtmp/codec/chunk` 不能用 `ws/codec/frame`，`net/`（包括 `net/tls/`）不能用 `app/http/codec/`。目前唯一的例外是 `ws` 可以用 `http`，因为 WebSocket 通过 HTTP Upgrade 建立。
 
-| 层 | 目录 |
+这些规则由 ctest 里的 `LayerDependencies` 用例检查。它运行 `cmake/check_layers.cmake`，扫描 `src/` 下每一条 include，发现违规就列出文件并失败。层按路径判断：任何 `codec/` 目录下的文件都是 codec 层，任何目录下名为 `server.*` 的文件（`app/http/server.cpp`，或以后的 `net/dns/server.cpp`）是 server 层，所以在 `app/` 下加一个协议目录不用改脚本，只有协议之间要新的依赖时才在 `COCO_PROTO_ALLOWED` 里加一项。`net/tcp_server.*` 不叫 `server.*`，仍属于 net 层，不能用 TLS。`net/tls/` 不算协议目录，任何 `server.*` 都能用它。
+
+各层对应的路径：
+
+| 层 | 路径 |
 | --- | --- |
 | core | `base/`、`common/`、`log/`、`utils/` |
-| l4 | `net/coco_socket.*`、`net/layer4/` |
+| codec | 任何 `codec/`：`net/dns/codec/`、`app/http/codec/`、`app/ws/codec/`、`app/rtmp/codec/` |
+| server | 任何 `server.*`：`app/http/server.*`、`app/rtmp/server.*` |
 | tls | `net/tls/` |
-| l7 | `net/layer7/*/`，加上 http-parser |
-| server | `server/` |
+| net | `net/` 的其余部分 |
+| app | `app/` 的其余部分，加上 http-parser |
 
 `base/`、`log/`、`utils/` 互相引用（日志要取协程 ID，协程要打日志），所以合成一层 core。
 
-构建上所有层编进同一个库 `libcoco`（CMake 目标 `coco::coco`），分层只靠上面的 include 规则保证，不再拆成每层一个库：拆开的好处是只用明文协议时可以不链接 OpenSSL，但代价是使用方要自己按顺序列出五个库再加上 ST 和 OpenSSL。ST、OpenSSL、http-parser 都是 `PRIVATE` 依赖：公共头文件里只有它们句柄类型的前置声明（`base/st_fwd.hpp`、`net/tls/coco_tls.hpp` 开头的 `SSL` / `SSL_CTX` / `BIO`），不 include 它们的头文件。
+构建上所有层编进同一个库 `libcoco`（CMake 目标 `coco::coco`），分层只靠上面的 include 规则保证，不再拆成每层一个库：拆开的好处是只用明文协议时可以不链接 OpenSSL，但代价是使用方要自己按顺序列出五个库再加上 ST 和 OpenSSL。ST、OpenSSL、http-parser 都是 `PRIVATE` 依赖：公共头文件里只有它们句柄类型的前置声明（`base/st_fwd.hpp`、`net/tls/config.hpp` 开头的 `SSL` / `SSL_CTX` / `BIO`），不 include 它们的头文件。
 
 一条 TCP 连接的读路径是 `TcpConn::Read` → `CocoSocket::Read` → `st_read`。TLS 连接的明文读路径是 `TlsConn::Read` → `SSL_read`，缺密文时再调用下层的 `Read`（TCP 时就是上面那条路径）喂给 `bio_in`。
 
@@ -79,7 +115,7 @@ I/O 接口在 `src/coco/utils/io.hpp`：`IoReader`、`IoWriter`、`IoReaderWrite
 
 ## 层间接口
 
-`layer7` 的服务端入口是一个函数，参数是一条已经建立好的 `StreamConn`，例如 `ServeHttpConn(StreamConn &conn, HttpHandler *handler)`。它不知道连接是怎么来的：可以是 TCP，可以是握手完成的 TLS，也可以是测试里的内存管道。TLS 同样只面对 `StreamConn`，输入一条，输出一条。
+`app` 的服务端入口是一个函数，参数是一条已经建立好的 `StreamConn`，例如 `ServeHttpConn(StreamConn &conn, HttpHandler *handler)`。它不知道连接是怎么来的：可以是 TCP，可以是握手完成的 TLS，也可以是测试里的内存管道。TLS 同样只面对 `StreamConn`，输入一条，输出一条。
 
 因此在任意两层之间插一层包装，就能观察或改变经过的字节，而不需要改协议代码：打印字节相当于在层间抓包，注入延迟或截断可以做故障实验。
 
@@ -89,8 +125,8 @@ I/O 接口在 `src/coco/utils/io.hpp`：`IoReader`、`IoWriter`、`IoReaderWrite
 
 服务端的结构由 `TcpServer` 固定下来：
 
-1. 一条监听协程（`ListenRoutine`）循环调用 `StreamListener::Accept()`。`Accept` 持续失败时（例如 `EMFILE`）睡 10ms 再试，不会空转。`TcpServer::Start` / `Serve` 接受任何 `StreamListener`；配置了证书时，它把监听器包成 `TlsListener`。
-2. 每个新连接一条连接协程（`ConnRoutine`）。TLS 握手推迟到处理函数第一次读写，所以也在这条协程上，之后的读写只在这条协程里。
+1. 一条监听协程（`ListenRoutine`）循环调用 `StreamListener::Accept()`。`Accept` 持续失败时（例如 `EMFILE`）睡 10ms 再试，不会空转。`TcpServer::Start` / `Serve` 接受任何 `StreamListener`。
+2. 每个新连接一条连接协程（`ConnRoutine`）。连接先设好 `TcpServerOptions` 的超时，再交给处理函数。处理函数是 `TlsHandler()` 时，TLS 握手就在这条协程上、受这些超时约束，握手失败就返回，不调用里面的处理函数；之后的读写只在这条协程里。
 3. 处理函数返回后，连接在自己的协程里释放自己，并从 `ConnManager` 的名单里移除。`TcpServer::Stop()` 和析构函数先停监听协程，再关闭监听 socket（新连接立刻被拒绝，端口马上可以重用），然后中断所有连接并等它们退出。两个协程同时调用 `Stop()` 时，后到的等先到的停完再返回，所以任何一个 `Stop()` 返回时服务都已经完全停下。
 4. `ListenAndServe` / `Serve` 是 `Start` 加 `Wait()`：调用它的协程（通常是主协程）停在一个条件变量上，直到 `Stop()` 或退出请求。退出请求来自 `CocoShutdown()`（任何线程都能调）或 `SIGINT` / `SIGTERM`：信号处理函数只往一个 pipe 里写一个字节，由一条普通内核线程读出来再调用 `CocoShutdown()`，后者把请求送到每个有运行时的线程，由各线程自己的协程完成关停，所以真正的关停逻辑都跑在普通协程上，不在信号上下文里。信号在第一次等待（或 `CocoRun`）时才接管：第一个信号请求退出，并把信号还给原来的处理方式；第二个信号直接按默认动作结束进程。读信号的不是协程，所以即使某段代码一直不让出也有效；启动时就被忽略的信号保持忽略。
 5. `CocoRun(fn)` 在主协程上直接调用 `fn`（用进程自己的栈，不是 64KB 的协程栈），并在它运行期间把退出请求变成对这条协程的一次中断加上 `CocoShouldStop()` 为 true：正在阻塞的调用失败一次，循环自己退出，`fn` 栈上的对象照常析构。
@@ -117,7 +153,7 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
 ## 协议
 
 - **TCP / UDP**：`ListenTcp`、`DialTcp`、`ListenUdp`、`DialUdp`。
-- **DNS**：在 `src/coco/net/layer4/`。原来解析用 `getaddrinfo`，它是阻塞的系统调用，解析期间整条 ST 线程停住；现在 `Resolver` 自己发查询，等应答时只让出当前协程。
+- **DNS**：在 `src/coco/net/dns/`。原来解析用 `getaddrinfo`，它是阻塞的系统调用，解析期间整条 ST 线程停住；现在 `Resolver` 自己发查询，等应答时只让出当前协程。
   - 顺序：IP 字面量（也接受带方括号的 IPv6 和 `%zone`）原样返回；然后查 hosts 文件；`localhost` 和 `*.localhost` 不在 hosts 里时固定是 127.0.0.1 / ::1（RFC 6761），不问服务器，免得 search 后缀把它变成别人的域名；最后按 resolv.conf 的规则生成候选名：结尾带点的只查它自己，点数不少于 `ndots` 的先查原名再加 search 后缀，否则先加后缀、原名放最后。
   - 查询：每个候选名把 A 和 AAAA 从同一个 UDP socket 一起发出（`AF_INET` / `AF_INET6` 只发一个），ID 随机，源端口由内核随机分配。只接受来自所问服务器地址和端口（IPv6 还比较 scope ID）、ID 和问题都对得上、opcode 为 QUERY 且只有一个问题的应答，其余的丢掉继续等。标签内不能含点或 NUL，名字解压最多迭代 255 次。应答带 TC 位时，在 `TaskGroup` 子协程里对同一服务器改用 TCP（2 字节长度前缀）重问，另一类记录的 UDP 应答仍可处理；TCP 应答仍带 TC 时不算成功，也不缓存。SERVFAIL、REFUSED、发送失败转下一个服务器；NXDOMAIN 和“有这个名字但没有这种记录”都算有结论。每个服务器共用一个由 `timeout_us` 确定的绝对截止时间，TCP 的每次读取都受它约束，整个列表最多过 `attempts` 遍。
   - 结果：只取问题名以及从它出发的 CNAME 链上的名字拥有的记录，别的名字的记录忽略，CNAME 成环则报错；`AF_UNSPEC` 时 IPv4 在前。成功的结果按 TTL 缓存（最多一小时，最多 4096 条），有效期从收到应答时起算，等待另一类记录的时间也计入 TTL；失败不缓存。
@@ -126,12 +162,12 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
   - 不做的：EDNS0、DNSSEC、DoT / DoH、`nsswitch.conf` 里其他来源（mDNS 的 `.local`、LDAP）、macOS 的分域解析（`scutil --dns` 里按域名指定服务器的 resolver，VPN 常用）、IDN，以及同一线程上对同一名字的并发查询合并。
 - **TLS**：服务端和客户端都有，可以套在任何 `StreamConn` 上。`TlsConfig` 共享 `SSL_CTX`，证书只加载一次。握手不绑定 TLS 1.2 的报文轮次，1.2 和 1.3 都能完成。证书校验是 `SSL_VERIFY_NONE`。
 - **HTTP/1.1**：接口仿照 Go 的 `net/http`。
-  - 服务端：处理函数是 `HttpHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r)`，或者用 `HandleFunc` 注册 lambda。`HttpServeMux` 支持 Go 1.22 的模式语法：可带方法（`"GET /users/{id}"`，GET 也接 HEAD）、主机、`{name}` 单段通配、`{name...}` 尾段、以 `/` 结尾的子树和 `{$}`。路由是按路径段建的树，越具体越优先：字面段优先于 `{name}`，再优先于子树；带方法的优先于不带方法的。和 Go 一样，不带方法的模式接受任何方法；只有路径匹配而所有模式的方法都不匹配时才回 405 和 `Allow`。含 `.`、`..`、`//` 的路径先 301 到规范形式；注册了 `/tree/` 而没有模式精确匹配 `/tree` 时，`/tree` 301 到 `/tree/`。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` / `ListenAndServeTLS` 一直服务到 `Stop()` 或退出请求，`Start` / `StartTLS` 开始服务后立即返回；HTTPS 由 `TcpServer` 的 `TlsListener` 提供，`ServeHttpConn` 第一次读请求时完成握手。
+  - 服务端：处理函数是 `HttpHandler::ServeHTTP(HttpResponseWriter &w, HttpRequest &r)`，或者用 `HandleFunc` 注册 lambda。`HttpServeMux` 支持 Go 1.22 的模式语法：可带方法（`"GET /users/{id}"`，GET 也接 HEAD）、主机、`{name}` 单段通配、`{name...}` 尾段、以 `/` 结尾的子树和 `{$}`。路由是按路径段建的树，越具体越优先：字面段优先于 `{name}`，再优先于子树；带方法的优先于不带方法的。和 Go 一样，不带方法的模式接受任何方法；只有路径匹配而所有模式的方法都不匹配时才回 405 和 `Allow`。含 `.`、`..`、`//` 的路径先 301 到规范形式；注册了 `/tree/` 而没有模式精确匹配 `/tree` 时，`/tree` 301 到 `/tree/`。`HttpServer` 是 `TcpServer` 加 `ServeHttpConn`，`ListenAndServe` / `ListenAndServeTLS` 一直服务到 `Stop()` 或退出请求，`Start` / `StartTLS` 开始服务后立即返回；HTTPS 由 `StartTLS` 加载证书、把处理函数换成 `TlsHandler(cfg, ServeHttpConn…)` 提供，证书加载失败时 `StartTLS` 直接返回 `ERROR_HTTPS_KEY_CRT` 并关闭刚监听的端口；握手在 `ServeHttpConn` 开始之前完成。
   - 连接循环：一条连接在整个生命周期里只用一个 `BufReader`、一个 `HttpResponseWriter` 和一个 `HttpRequest`，缓冲区跨请求复用，流水线请求中提前读到的字节不会丢。请求头只把头部字节交给 http-parser 解析，body 由 `HttpBodyReader` 按 Content-Length 或 chunked 从同一个缓冲区读。处理函数没读完的 body 在 256KB 以内会被跳过以保住 keep-alive，更长就关连接。`Expect: 100-continue` 在处理函数第一次读 body 时才回 100。请求头超限回 431，格式错误或 HTTP/1.1 缺 Host 回 400，之后关连接。
   - 写响应：语义同 Go 的 `ResponseWriter`。写入先进 4KB 缓冲；处理函数返回时还没超过缓冲区、又没设 Content-Length，就自动补上 Content-Length，状态行、头部和 body 一次写出；超过缓冲区或调用 `Flush()` 后改成 chunked（HTTP/1.0 则以关连接结束），大块数据用 `writev` 直接发出，不拷进缓冲区。没设 Content-Type 时按前 512 字节嗅探，自动加 Date。`Hijack()` 交出连接和读缓冲，之后服务端不再碰这条连接，WebSocket 就是这样接管的；Upgrade 请求没被接管时，响应后关连接。
   - 客户端：`HttpClient` 仿照 Go 的 `http.Client`，`Get` / `Post` / `Do(HttpRequest&)` 返回 `std::unique_ptr<HttpResponse>`，从 `resp->body` 读 body。keep-alive 连接按 `scheme://host:port` 放进连接池复用（每个主机默认留 2 条空闲）；`HttpResponse` 析构时，body 已读完（或者剩下的部分已经全在缓冲区里）就把连接还回池子，否则关掉。从池里取出的连接若已被服务端关闭，请求会在新连接上重试一次：写失败时总是重试，读失败时只重试 GET、HEAD、OPTIONS、TRACE。默认跟随最多 10 次重定向，301/302/303 把非 GET/HEAD 改成不带 body 的 GET，跨主机时去掉 Authorization 和 Cookie。连接由注入的 `StreamDialer` 建立，`http://` 默认 `TcpDialer()`，`https://` 需要 `SetTlsDialer(TlsDialer())`。`HttpGet` / `HttpPost` 用一个共享的默认客户端。
-- **WebSocket**：在 `src/coco/net/layer7/ws/coco_ws.cpp`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 要先 `SetTlsDialer(TlsDialer())`，否则返回 `ERROR_HTTPS_NOT_SUPPORTED`）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer` 或带 TLS 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。握手时 `WebSocketHandler` 用 `Hijack()` 接管连接，之后 `ServeHttpConn` 不再按 HTTP 读它。帧的编解码在 `ws_frame.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
-- **RTMP**：在 `src/coco/net/layer7/rtmp/`。握手先认复杂握手（HMAC-SHA256 digest，两种 scheme 都接受），对不上再退回简单握手（版本字段为 0，S2/C2 回显对端的 1536 字节）。`RtmpConn` 在一条 `StreamConn` 上收发已经按 chunk 拼好的消息；chunk size、acknowledgement、peer bandwidth 和 ping 在 `ReadMessage` 里处理，写出整条消息一次完成并用锁串行化，所以应答不会和业务写交错。`ServeRtmpConn` 完成 connect 和 createStream，收到 publish 或 play 后先回 NetStream 状态，再把连接交给处理函数。`RtmpClient` 解析 `rtmp://host[:port]/app/stream`（第一段是 app，其余是流名）；`rtmps://` 要先 `SetDialer(TlsDialer())`。`RtmpServer` 是 `TcpServer` 加 `ServeRtmpConn`，`ListenAndServeTLS` 就是 RTMPS。单条消息受 24 位长度限制（`kRtmpMaxMessage`，16777215 字节）。不实现 RTMPE 和 shared object，aggregate 消息原样交给调用方。
+- **WebSocket**：在 `src/coco/app/ws/`。`WebSocketConn` 是握手之后的一条连接，客户端和服务端共用。一条协程用 `ReadMessage()` 同步读下一条数据消息（分片已拼好），PING 和 CLOSE 在读的过程中顺带回复，所以总得有协程在读；对端的 CLOSE 要等它前面的消息都被读走后才回，这样对这些消息的回复能先发出去。`Send` 可以在任意协程调用，整帧一次写出并用锁串行化，所以不会和 PONG 交错。客户端 `WebSocketClient` 用 HTTP 升级握手，发送的每一帧用随机掩码，有两种用法：仿照 Go 的 `Dial("ws://host:port/path")`（`wss://` 要先 `SetTlsDialer(TlsDialer())`，否则返回 `ERROR_HTTPS_NOT_SUPPORTED`）之后由调用方自己循环 `ReadMessage()`，析构时连接还开着就发 CLOSE 1000；或者 `Start()`，另起一条读协程循环读，把消息交给 `SetMessageHandler` 的回调，这时不能再调 `ReadMessage()`。服务端仿照 Go：`WebSocketHandler` 包一个 `void(WebSocketConn *)` 函数，注册到 `HttpServeMux` 上，`HttpServer`，或处理函数是 `TlsHandler(cfg, ServeHttpConn…)` 的 `TcpServer`（wss）都能用。它校验升级请求（`GET`、`Upgrade: websocket`、`Connection: upgrade`、16 字节的 `Sec-WebSocket-Key`、版本 13），不合格回 400；握手成功后在这条 HTTP 连接的协程里调用这个函数，函数就是连接的生命周期，返回时若连接还开着就发 CLOSE 1000，再等还卡在 `Send` 里的协程（最多等到发送超时），然后释放连接。别的协程可以拿着 `WebSocketConn*` 推送，但只能到这个函数返回为止。服务端发送不加掩码，收到不带掩码的帧按 1002 关闭。握手时 `WebSocketHandler` 用 `Hijack()` 接管连接，之后 `ServeHttpConn` 不再按 HTTP 读它。帧的编解码在 `ws/codec/frame.cpp`，握手的 URL 解析和 Key / Accept 计算在 `ws/codec/handshake.cpp`：`WebSocketFrameDecoder` 自己缓存不完整的帧，把分片拼成完整消息，分片之间插入的控制帧单独交出；违反 RFC 6455 的帧（保留位或 opcode、分片或超过 125 字节的控制帧、单帧或消息超过 `MAX_WS_PACKET`）会让连接回 1002 / 1009 后关闭。
+- **RTMP**：在 `src/coco/app/rtmp/`。握手先认复杂握手（HMAC-SHA256 digest，两种 scheme 都接受），对不上再退回简单握手（版本字段为 0，S2/C2 回显对端的 1536 字节）。`RtmpConn` 在一条 `StreamConn` 上收发已经按 chunk 拼好的消息；chunk size、acknowledgement、peer bandwidth 和 ping 在 `ReadMessage` 里处理，写出整条消息一次完成并用锁串行化，所以应答不会和业务写交错。`ServeRtmpConn` 完成 connect 和 createStream，收到 publish 或 play 后先回 NetStream 状态，再把连接交给处理函数。`RtmpClient` 解析 `rtmp://host[:port]/app/stream`（第一段是 app，其余是流名）；`rtmps://` 要先 `SetDialer(TlsDialer())`。`RtmpServer` 是 `TcpServer` 加 `ServeRtmpConn`，`ListenAndServeTLS` 就是 RTMPS。单条消息受 24 位长度限制（`kRtmpMaxMessage`，16777215 字节）。不实现 RTMPE 和 shared object，aggregate 消息原样交给调用方。
 
 库里没有 HTTP/2。服务端一条连接对应一个 `ConnRoutine`，用完即回收；连接池只在 `HttpClient` 里。
 
@@ -155,4 +191,4 @@ server.ListenAndServe("127.0.0.1", 8080);   // 到 Ctrl-C 为止
 
 ## 示例与测试
 
-`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS 和 `CocoShouldStop()`；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`thread_test.cpp` 覆盖两个线程各跑一套运行时、`CocoThread` 的投递 / 中断 / 停止（`Stop()` 只挂起调用方、并发 `Stop()`、退出请求中断投递的函数）、从普通线程调用 `CocoShutdown()`、fd 在线程之间交接，以及多线程的 `TcpServer`（按负载分配、TLS、退出请求、只接受 `TcpListener`）和 `HttpServer`；`task_group_test.cpp` 覆盖 `TaskGroup` 的等待、首个错误、取消（含取消后才起的函数）、析构时取消并等待、等待方被中断时取消整组（包括 `CocoRun` 主体收到退出请求），`CocoYield()` 让停止请求进入不做 I/O 的循环，以及 `CocoThread` 的 `Call()`（从协程和普通线程）、负载上限、未启动就 `Stop()` 时丢弃排队的函数、退出请求之后投递的函数一启动就是中断状态；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、别的线程有自己的运行时、调试构建里跨线程使用对象会断言失败、`SIGTERM` 让多线程服务以状态 0 退出、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`dns_test.cpp` 覆盖 DNS 报文的编解码（压缩指针、指针成环和向前指、超长名字、任意截断、opcode / 问题数 / 标签校验、解压迭代上限）、resolv.conf 和 hosts 的解析、字面量 / hosts / localhost，以及对着同一线程上一个假 DNS 服务器的查询：A 和 AAAA 一起发、缓存及 TTL 从应答到达起算、配置重载后旧查询不回填缓存、CNAME 链之外的记录被忽略和成环报错、search 列表的顺序、SERVFAIL 转下一个服务器、丢包重试和超时、伪造的应答（含 IPv6 scope 不符）被忽略、截断后改用 TCP（慢 TCP 不挡 UDP 应答、逐段读取共用截止时间、仍带 TC 被拒绝）、查询期间别的协程照常运行、被中断时取消并等待 TCP 子任务结束，以及 `DialTcp("localhost")`。这些用例不访问外网。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发、`dns/lookup` 并发解析主机名，以及 `threads/` 下对照单线程、多线程服务器、`CocoThread` 和普通线程的四个程序）用来手动验证。
+`tests/` 下是 ctest 用例，`./build.sh -t` 会跑它们。`coroutine_test.cpp` 覆盖协程和 `ConnManager` 的生命周期；`tcp_server_test.cpp` 覆盖 `TcpServer` 的回显、关停、处理函数返回、TLS、`CocoShouldStop()`，以及 `TlsHandler`：握手失败（对端不说 TLS）时不调用里面的处理函数、关闭连接并继续接受，超时在处理函数之前设好、能截住不发 ClientHello 的对端，`Stop()` 能中断卡在握手里的连接并等它退出；`tls_test.cpp` 覆盖 `TlsConn` 的读写和并发写、`TlsListener`、`HttpServer::StartTLS`，以及证书加载失败时 `HttpServer` / `RtmpServer` 的 `StartTLS` 直接失败并关闭端口；`ws_test.cpp` 覆盖帧的编解码（任意切分、分片与控制帧交错、非法帧）、客户端对 PING / CLOSE 的回复、`Dial` 的 URL 解析和析构时的 CLOSE 1000，以及读协程退出时仍有协程阻塞在 `Send` 里的情况；`ws_server_test.cpp` 覆盖服务端的握手（大小写不同的头、紧跟在请求后面的帧）、非法升级回 400、PING / CLOSE（和 CLOSE 同包到达的消息仍会被读到）、拒收不带掩码的帧、处理函数返回时发 CLOSE 1000、关停时结束已打开的连接，以及 wss；`http_test.cpp` 覆盖 HTTP 的响应分帧（自动 Content-Length、chunked、Flush）、流水线、各种请求 body 与未读 body 的跳过、100-continue、HEAD、HTTP/1.0、431/400/417、路由规则和 405、请求字段的解码，以及客户端的连接复用、过期连接重试、重定向和响应分帧；`lifecycle_test.cpp` 通过 `HttpServer`、`WebSocketClient` 走一遍关停和对端关闭的路径；`thread_test.cpp` 覆盖两个线程各跑一套运行时、`CocoThread` 的投递 / 中断 / 停止（`Stop()` 只挂起调用方、并发 `Stop()`、退出请求中断投递的函数）、从普通线程调用 `CocoShutdown()`、fd 在线程之间交接，以及多线程的 `TcpServer`（按负载分配、TLS、退出请求、只接受 `TcpListener`）和 `HttpServer`；`task_group_test.cpp` 覆盖 `TaskGroup` 的等待、首个错误、取消（含取消后才起的函数）、析构时取消并等待、等待方被中断时取消整组（包括 `CocoRun` 主体收到退出请求），`CocoYield()` 让停止请求进入不做 I/O 的循环，以及 `CocoThread` 的 `Call()`（从协程和普通线程）、负载上限、未启动就 `Stop()` 时丢弃排队的函数、退出请求之后投递的函数一启动就是中断状态；`runtime_test.cpp` 覆盖 `CocoInit()` 的幂等、别的线程有自己的运行时、调试构建里跨线程使用对象会断言失败、`SIGTERM` 让多线程服务以状态 0 退出、`CocoShutdown()` 和信号唤醒等待者、阻塞式 `ListenAndServe` 在 `Stop()` / 退出请求 / 处理函数里 `CocoShutdown()` 时返回、`Stop()` 关闭监听端口且并发调用安全，以及 `CocoRun` 的各条退出路径；其中两个用例起子进程发真实信号：第一个 `SIGTERM` 让服务以状态 0 退出，第二个 `SIGINT` 结束一个一直不让出协程的进程；`LayerDependencies` 检查分层。`rtmp_test.cpp` 覆盖 AMF0、chunk（含扩展时间戳和交错）、URL，以及本机推流再拉流。`dns_test.cpp` 覆盖 DNS 报文的编解码（压缩指针、指针成环和向前指、超长名字、任意截断、opcode / 问题数 / 标签校验、解压迭代上限）、resolv.conf 和 hosts 的解析、字面量 / hosts / localhost，以及对着同一线程上一个假 DNS 服务器的查询：A 和 AAAA 一起发、缓存及 TTL 从应答到达起算、配置重载后旧查询不回填缓存、CNAME 链之外的记录被忽略和成环报错、search 列表的顺序、SERVFAIL 转下一个服务器、丢包重试和超时、伪造的应答（含 IPv6 scope 不符）被忽略、截断后改用 TCP（慢 TCP 不挡 UDP 应答、逐段读取共用截止时间、仍带 TC 被拒绝）、查询期间别的协程照常运行、被中断时取消并等待 TCP 子任务结束，以及 `DialTcp("localhost")`。这些用例不访问外网。`examples/` 里的程序（TCP/UDP echo、HTTPS 服务端和客户端、WebSocket 客户端和回显服务端、RTMP 直播转发、`dns/lookup` 并发解析主机名，以及 `threads/` 下对照单线程、多线程服务器、`CocoThread` 和普通线程的四个程序）用来手动验证。

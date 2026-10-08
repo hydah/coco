@@ -19,10 +19,10 @@
 #include "coco/base/shutdown.hpp"
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/layer7/http/coco_http.hpp"
-#include "coco/server/coco_http_server.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/app/http/client.hpp"
+#include "coco/app/http/server.hpp"
+#include "coco/net/tcp_server.hpp"
 #include "test_util.hpp"
 
 using namespace coco;

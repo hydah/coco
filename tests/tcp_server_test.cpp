@@ -7,9 +7,9 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/tls/coco_tls.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/net/tls/conn.hpp"
+#include "coco/net/tcp_server.hpp"
 #include "test_util.hpp"
 
 using namespace coco;
@@ -166,13 +166,18 @@ COTEST(TcpServerHandlerSeesShouldStop) {
     CHECK(saw_stop);
 }
 
-// With a key and certificate, the handler reads and writes plaintext over TLS.
+std::shared_ptr<TlsConfig> ServerTlsConfig() {
+    std::shared_ptr<TlsConfig> cfg;
+    CHECK_EQ(TlsConfig::NewServer(COCO_SOURCE_DIR "/examples/http-server/server.key",
+                                  COCO_SOURCE_DIR "/examples/http-server/server.crt", &cfg),
+             COCO_SUCCESS);
+    return cfg;
+}
+
+// With TlsHandler in front, the handler reads and writes plaintext over TLS.
 COTEST(TcpServerServesTls) {
     const int port = 19196;
-    TcpServerOptions opt;
-    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
-    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
-    TcpServer server(Echo, opt);
+    TcpServer server(TlsHandler(ServerTlsConfig(), Echo));
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> tcp = Dial(port);
@@ -188,17 +193,91 @@ COTEST(TcpServerServesTls) {
     CHECK(ReadN(&tls, 8) == "over tls");
 }
 
-// A key or certificate that does not load fails Start() instead of every handshake.
-COTEST(TcpServerRejectsBadTlsFiles) {
-    const int port = 19190;
-    TcpServerOptions opt;
-    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/missing.key";
-    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
-    TcpServer server(Echo, opt);
-    CHECK_EQ(server.Start(kLoopback, port), ERROR_HTTPS_KEY_CRT);
+// A peer that does not speak TLS fails the handshake: next is not called, the connection
+// is closed and the server keeps accepting.
+COTEST(TlsHandlerFailureSkipsNext) {
+    const int port = 19185;
+    int handled = 0;
+    int handshake_ret = -1;
+    StreamHandler tls = TlsHandler(ServerTlsConfig(), [&handled](StreamConn &conn) {
+        ++handled;
+        return Echo(conn);
+    });
+    TcpServer server([&](StreamConn &conn) { return handshake_ret = tls(conn); });
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
-    std::unique_ptr<TcpConn> refused;
-    CHECK(DialTcp(kLoopback, port, kConnectTimeoutUs, &refused) != COCO_SUCCESS);
+    std::unique_ptr<TcpConn> plain = Dial(port);
+    CHECK(plain && WriteAll(plain.get(), "GET / HTTP/1.1\r\n\r\n"));
+    CHECK(plain && PeerClosed(plain.get()));
+    CHECK_EQ(handshake_ret, ERROR_HTTPS_HANDSHAKE);
+    CHECK_EQ(handled, 0);
+    CHECK(cotest::WaitUntil([&]() { return server.ConnCount() == 0; }));
+
+    std::unique_ptr<TcpConn> tcp = Dial(port);
+    CHECK(tcp != nullptr);
+    if (!tcp) {
+        return;
+    }
+    std::shared_ptr<TlsConfig> cfg;
+    CHECK_EQ(TlsConfig::NewClient(&cfg), COCO_SUCCESS);
+    TlsConn client(std::move(tcp), cfg);
+    CHECK_EQ(client.Handshake(), COCO_SUCCESS);
+    CHECK(WriteAll(&client, "ok"));
+    CHECK(ReadN(&client, 2) == "ok");
+    CHECK_EQ(handled, 1);
+}
+
+// The server's timeouts are set before the handler runs, so they bound the handshake.
+// Without them the handshake would wait for the silent client forever.
+COTEST(TlsHandlerTimeoutsBoundHandshake) {
+    const int port = 19187;
+    int handled = 0;
+    int handshake_ret = -1;
+    StreamHandler tls = TlsHandler(ServerTlsConfig(), [&handled](StreamConn &) {
+        ++handled;
+        return COCO_SUCCESS;
+    });
+    TcpServerOptions opt;
+    opt.recv_timeout_us = 100 * 1000;
+    TcpServer server([&](StreamConn &conn) { return handshake_ret = tls(conn); }, opt);
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
+
+    std::unique_ptr<TcpConn> silent = Dial(port);
+    CHECK(silent != nullptr);
+    CHECK(cotest::WaitUntil([&]() { return handshake_ret != -1; }));
+    CHECK_EQ(handshake_ret, ERROR_SOCKET_TIMEOUT);
+    CHECK(silent && PeerClosed(silent.get()));
+    CHECK_EQ(handled, 0);
+}
+
+// Stop() interrupts a handshake blocked in a read like any handler, and returns only after
+// it has returned and the connection is closed.
+COTEST(TlsHandlerStopInterruptsHandshake) {
+    const int port = 19188;
+    bool entered = false;
+    int handled = 0;
+    int handshake_ret = -1;
+    StreamHandler tls = TlsHandler(ServerTlsConfig(), [&handled](StreamConn &) {
+        ++handled;
+        return COCO_SUCCESS;
+    });
+    TcpServer server([&](StreamConn &conn) {
+        entered = true;
+        return handshake_ret = tls(conn);
+    });
+    CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
+
+    std::unique_ptr<TcpConn> silent = Dial(port);
+    CHECK(silent != nullptr);
+    CHECK(cotest::WaitUntil([&]() { return entered; }));
+    CHECK_EQ(handshake_ret, -1);
+
+    server.Stop();
+
+    CHECK_EQ(handshake_ret, ERROR_SOCKET_READ);
+    CHECK_EQ(server.ConnCount(), 0);
+    CHECK_EQ(handled, 0);
+    CHECK(silent && PeerClosed(silent.get()));
 }
 
 // An IPv6 literal listens on IPv6, and peer addresses are formatted as [addr]:port.

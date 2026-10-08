@@ -7,9 +7,12 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/tls/coco_tls.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/app/http/client.hpp"
+#include "coco/app/http/server.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/net/tcp_server.hpp"
+#include "coco/app/rtmp/server.hpp"
+#include "coco/net/tls/conn.hpp"
 #include "test_util.hpp"
 
 using namespace coco;
@@ -71,10 +74,19 @@ int Echo(StreamConn &c) {
     return ret;
 }
 
-TcpServerOptions TlsOptions() {
+const char *kKeyFile = COCO_SOURCE_DIR "/examples/http-server/server.key";
+const char *kCrtFile = COCO_SOURCE_DIR "/examples/http-server/server.crt";
+
+std::shared_ptr<TlsConfig> ServerConfig() {
+    std::shared_ptr<TlsConfig> cfg;
+    CHECK_EQ(TlsConfig::NewServer(kKeyFile, kCrtFile, &cfg), COCO_SUCCESS);
+    return cfg;
+}
+
+StreamHandler Tls(StreamHandler next) { return TlsHandler(ServerConfig(), next); }
+
+TcpServerOptions Timeouts() {
     TcpServerOptions opt;
-    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
-    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
     opt.recv_timeout_us = kTimeoutUs;
     opt.send_timeout_us = kTimeoutUs;
     return opt;
@@ -110,16 +122,15 @@ std::unique_ptr<TlsConn> DialTls(int port) {
 // ReadFully fills the buffer with plaintext even when it arrives in several records.
 COTEST(TlsReadFullyReturnsPlaintext) {
     const int port = 19211;
-    TcpServer server(
-        [](StreamConn &c) {
-            c.Write((void *)"01234", 5, nullptr);
-            CocoSleepMs(5);
-            c.Write((void *)"56789", 5, nullptr);
-            char b;
-            ssize_t n = 0;
-            return c.Read(&b, 1, &n);
-        },
-        TlsOptions());
+    TcpServer server(Tls([](StreamConn &c) {
+                         c.Write((void *)"01234", 5, nullptr);
+                         CocoSleepMs(5);
+                         c.Write((void *)"56789", 5, nullptr);
+                         char b;
+                         ssize_t n = 0;
+                         return c.Read(&b, 1, &n);
+                     }),
+                     Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> ssl = DialTls(port);
@@ -145,27 +156,26 @@ COTEST(TlsConcurrentWriters) {
 
     size_t got_a = 0, got_b = 0, got_other = 0;
     int read_err = COCO_SUCCESS;
-    TcpServer server(
-        [&](StreamConn &c) {
-            char buf[8192];
-            while (got_a + got_b + got_other < kTotal) {
-                ssize_t n = 0;
-                if ((read_err = c.Read(buf, sizeof(buf), &n)) != COCO_SUCCESS) {
-                    break;
-                }
-                for (ssize_t i = 0; i < n; ++i) {
-                    if (buf[i] == 'a') {
-                        ++got_a;
-                    } else if (buf[i] == 'b') {
-                        ++got_b;
-                    } else {
-                        ++got_other;
-                    }
+    StreamHandler count = [&](StreamConn &c) {
+        char buf[8192];
+        while (got_a + got_b + got_other < kTotal) {
+            ssize_t n = 0;
+            if ((read_err = c.Read(buf, sizeof(buf), &n)) != COCO_SUCCESS) {
+                break;
+            }
+            for (ssize_t i = 0; i < n; ++i) {
+                if (buf[i] == 'a') {
+                    ++got_a;
+                } else if (buf[i] == 'b') {
+                    ++got_b;
+                } else {
+                    ++got_other;
                 }
             }
-            return read_err;
-        },
-        TlsOptions());
+        }
+        return read_err;
+    };
+    TcpServer server(Tls(count), Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> ssl = DialTls(port);
@@ -201,7 +211,7 @@ COTEST(TlsConcurrentWriters) {
 // included, goes through it, and timeouts set on the TlsConn reach it.
 COTEST(TlsOverAnyStreamConn) {
     const int port = 19213;
-    TcpServer server(Echo, TlsOptions());
+    TcpServer server(Tls(Echo), Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> tcp;
@@ -234,7 +244,7 @@ COTEST(TlsOverAnyStreamConn) {
 // through the connection the under-dialer made.
 COTEST(TlsDialerOverAnyDialer) {
     const int port = 19216;
-    TcpServer server(Echo, TlsOptions());
+    TcpServer server(Tls(Echo), Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     CountingConn *counting = nullptr;
@@ -267,7 +277,7 @@ COTEST(TlsDialerOverAnyDialer) {
 // Without Handshake(), the first Write handshakes before sending.
 COTEST(TlsHandshakesOnFirstUse) {
     const int port = 19214;
-    TcpServer server(Echo, TlsOptions());
+    TcpServer server(Tls(Echo), Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TlsConn> tls = DialTlsLazy(port);
@@ -284,10 +294,10 @@ COTEST(TlsHandshakesOnFirstUse) {
 }
 
 // A peer that connects and never sends a ClientHello holds up only its own connection:
-// TlsListener::Accept does not handshake, so the next client is served.
+// the handshake runs on its connection's coroutine, so the next client is served.
 COTEST(TlsSilentPeerDoesNotBlockAccept) {
     const int port = 19215;
-    TcpServer server(Echo, TlsOptions());
+    TcpServer server(Tls(Echo), Timeouts());
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::unique_ptr<TcpConn> silent;
@@ -305,4 +315,74 @@ COTEST(TlsSilentPeerDoesNotBlockAccept) {
     CHECK_EQ(tls->ReadFully(buf, sizeof(buf), &n), COCO_SUCCESS);
     CHECK(std::string(buf, n) == "next");
     CHECK_EQ(server.ConnCount(), 2);
+}
+
+// A TlsListener passed to Serve works like TlsHandler: the handler sees plaintext.
+COTEST(TlsListenerServesTls) {
+    const int port = 19217;
+    std::unique_ptr<TcpListener> tcp;
+    CHECK_EQ(ListenTcp(kLoopback, port, &tcp), COCO_SUCCESS);
+    if (!tcp) {
+        return;
+    }
+    TcpServer server(Echo);
+    CHECK_EQ(server.Start(std::unique_ptr<StreamListener>(
+                 new TlsListener(std::move(tcp), ServerConfig()))),
+             COCO_SUCCESS);
+
+    std::unique_ptr<TlsConn> tls = DialTls(port);
+    CHECK(tls != nullptr);
+    if (!tls) {
+        return;
+    }
+    CHECK_EQ(tls->Write((void *)"tlsl", 4, nullptr), COCO_SUCCESS);
+    char buf[4];
+    ssize_t n = 0;
+    CHECK_EQ(tls->ReadFully(buf, sizeof(buf), &n), COCO_SUCCESS);
+    CHECK(std::string(buf, n) == "tlsl");
+}
+
+// HttpServer loads the certificate itself: StartTLS serves https.
+COTEST(HttpServerServesTls) {
+    const int port = 19218;
+    HttpServer server([](HttpResponseWriter &w, HttpRequest &r) { w.Write("secure " + r.path); });
+    CHECK_EQ(server.StartTLS(kLoopback, port, kCrtFile, kKeyFile), COCO_SUCCESS);
+
+    HttpClient client(kTimeoutUs);
+    client.SetTlsDialer(TlsDialer());
+    std::unique_ptr<HttpResponse> resp;
+    CHECK_EQ(client.Get("https://127.0.0.1:" + std::to_string(port) + "/x", &resp),
+             COCO_SUCCESS);
+    if (!resp) {
+        return;
+    }
+    CHECK_EQ(resp->status_code, HttpStatusOK);
+    std::string body;
+    CHECK_EQ(resp->body.ReadAll(&body), COCO_SUCCESS);
+    CHECK(body == "secure /x");
+}
+
+// A key or certificate that does not load fails StartTLS instead of every handshake, and
+// the port it listened on is closed again.
+COTEST(HttpServerRejectsBadTlsFiles) {
+    const int port = 19190;
+    HttpServer server([](HttpResponseWriter &w, HttpRequest &) { w.Write("never"); });
+    CHECK_EQ(server.StartTLS(kLoopback, port, kCrtFile,
+                             COCO_SOURCE_DIR "/examples/http-server/missing.key"),
+             ERROR_HTTPS_KEY_CRT);
+
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, port, kTimeoutUs, &refused) != COCO_SUCCESS);
+}
+
+// The same for RTMPS.
+COTEST(RtmpServerRejectsBadTlsFiles) {
+    const int port = 19189;
+    RtmpServer server([](RtmpConn &, const RtmpRequest &) { return COCO_SUCCESS; });
+    CHECK_EQ(server.StartTLS(kLoopback, port, kCrtFile,
+                             COCO_SOURCE_DIR "/examples/http-server/missing.key"),
+             ERROR_HTTPS_KEY_CRT);
+
+    std::unique_ptr<TcpConn> refused;
+    CHECK(DialTcp(kLoopback, port, kTimeoutUs, &refused) != COCO_SUCCESS);
 }

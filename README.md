@@ -132,7 +132,7 @@ TcpServer server(Echo, opt);     // HttpServer 用 HttpServeOptions::threads
 return server.ListenAndServe("0.0.0.0", 8080);
 ```
 
-这时处理函数会在多个线程上同时被调用，它用到的共享数据要能跨线程使用（自己加锁或用原子变量）。注意 pthread 锁一旦等待，挡住的是那个线程上所有的协程，所以临界区要短。TLS 照常写在选项里，握手由 worker 自己做。`Stop()` 和退出请求会让各个 worker 中断自己的连接、等它们退出，再结束线程。`RtmpServer` 目前还是单线程：推流和拉流必须在同一个线程上才能转发。
+这时处理函数会在多个线程上同时被调用，它用到的共享数据要能跨线程使用（自己加锁或用原子变量）。注意 pthread 锁一旦等待，挡住的是那个线程上所有的协程，所以临界区要短。TLS 把处理函数套一层：`TcpServer server(TlsHandler(cfg, Echo), opt)`（`HttpServer` 直接 `ListenAndServeTLS`），握手在 worker 上、连接自己的协程里做。`Stop()` 和退出请求会让各个 worker 中断自己的连接、等它们退出，再结束线程。`RtmpServer` 目前还是单线程：推流和拉流必须在同一个线程上才能转发。
 
 也可以直接用 `CocoThread`，它是一个跑着自己运行时的内核线程：
 
@@ -328,14 +328,17 @@ target_link_libraries(app PRIVATE coco::coco)
 ## 架构
 
 ```text
-server     TcpServer、HttpServer               accept 循环 + 可选 TLS + 可选 worker 线程 + 协议处理函数
-layer7  |  HTTP、WebSocket、RTMP               只依赖 StreamConn / StreamDialer
-tls     |  TlsConn、TlsListener、TlsDialer      把一个 StreamConn 包成另一个 StreamConn
-layer4     StreamConn 等接口；TcpConn、UdpConn  st_read / st_write / st_accept
-core       协程、日志、错误码、工具             st_thread_create
+server     HttpServer、RtmpServer（server.*）      协议的 Serve 函数，TcpServer + 可选 TlsHandler
+app     |  app/ 下 HTTP、WebSocket、RTMP 的会话     只依赖 StreamConn / StreamDialer
+tls     |  net/tls/：TlsConn、TlsDialer、TlsHandler 把一个 StreamConn 包成另一个 StreamConn
+net        net/ 的其余部分：接口、TCP、UDP、TcpServer、DNS   st_read / st_write / st_accept
+codec      各协议的 codec/                          协议本身，不碰连接和协程
+core       协程、日志、错误码、工具                 st_thread_create
 ```
 
-`layer7` 和 `tls` 平级、互不依赖：客户端通过注入的 `StreamDialer` 建连，https / wss 时由调用方传 `TlsDialer()`。一个文件只能 include 同一层或更低层的头文件，平级层之间也不能互相 include，ctest 里的 `LayerDependencies` 用例会扫描 `src/` 检查这一点。因为层与层之间只通过 `StreamConn` 交互，在中间插一层包装就能抓包、注入延迟或截断，而不用改协议代码。
+网络代码分两个目录，只看一个问题：它是不是在帮你拿到一条字节流（`StreamConn`）。是的放 `net/`：TCP、UDP、`TcpServer`、拨号前要用的 DNS（`net/dns/`），以及把字节流变成加密字节流的 TLS（`net/tls/`）。在字节流上说话的应用层协议放 `app/`，每个协议一个目录，内部再分三层：`codec/` 是协议本身，用一段字节就能读懂和测试；目录里的其余文件是会话，在一条 `StreamConn` 上驱动 codec；`server` 先是逐连接服务的函数（`ServeHttpConn`），再用 `TcpServer` 组装成服务（`HttpServer`），和 Go 的 `net/http/server.go` 一样放在一个文件里。读一个协议就按这个顺序往上看。
+
+`net/tls/` 在分层上比 `net` 的其余部分高一层，`TcpServer`、socket、DNS 都不能用它；`app` 和 `tls` 平级、互不依赖：客户端通过注入的 `StreamDialer` 建连，https / wss 时由调用方传 `TlsDialer()`；服务端的 `TcpServer` 也不认识 TLS，只对每条连接调用处理函数，`HttpServer` / `RtmpServer` 的 `ListenAndServeTLS` 把处理函数换成 `TlsHandler(cfg, …)`：先握手，再把明文连接交给协议，对应 Go 的 `(*conn).serve` 开头那次 `tlsConn.Handshake()`。一个文件只能 include 同一层或更低层的头文件，平级层之间也不能互相 include；codec 不能 include `base/` 和 ST，一个协议的 codec 只给本协议用。ctest 里的 `LayerDependencies` 用例会扫描 `src/` 检查这些规则。因为层与层之间只通过 `StreamConn` 交互，在中间插一层包装就能抓包、注入延迟或截断，而不用改协议代码。
 
 `src/coco/` 目录布局，安装后就是 `include/coco/`（`utils/utils.hpp`、`md5` / `sha1` / `base64`、`base/shutdown.hpp` 只在库内部用，不安装）：
 
@@ -347,14 +350,13 @@ src/coco/
 ├── common/          错误码
 ├── log/             日志
 ├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5
-├── net/
-│   ├── layer4/      TCP、UDP、DNS 解析（Resolver、LookupHost）
-│   ├── tls/         TlsConfig、TlsConn、TlsListener、TlsDialer
-│   └── layer7/
-│       ├── http/    报文、HttpServeMux、ServeHttpConn、HttpClient
-│       ├── ws/      帧编解码、WebSocketConn、WebSocketClient、WebSocketHandler
-│       └── rtmp/    握手、chunk、AMF0、RtmpConn、RtmpClient
-└── server/          TcpServer、HttpServer、RtmpServer
+├── net/             拿到字节流：StreamConn 等接口、TCP、UDP、TcpServer
+│   ├── dns/         codec/：报文、resolv.conf 与 hosts、应答；resolver：Resolver、LookupHost
+│   └── tls/         config：TlsConfig；conn：TlsConn、TlsDialer、TlsListener、TlsHandler
+└── app/             在字节流上说话的应用层协议
+    ├── http/        codec/：头部、报文解析与 body 分帧、URL；handler、response_writer、mux、client（HttpClient）、server（ServeHttpConn、HttpServer）
+    ├── ws/          codec/：帧、握手；conn（WebSocketConn）、client（WebSocketClient）、handler（WebSocketHandler）
+    └── rtmp/        codec/：握手、chunk、AMF0、命令、URL；conn（RtmpConn）、client（RtmpClient）、server（ServeRtmpConn、RtmpServer）
 ```
 
 ## 文档

@@ -8,8 +8,8 @@ coco 的并发模型是：一个操作系统线程上跑很多栈式协程。阻
 
 - `src/coco/base/coroutine.hpp`、`src/coco/base/coroutine.cpp`：`CoCoroutine`、`ListenRoutine`、`ConnRoutine`
 - `src/coco/base/coroutine_mgr.hpp`、`src/coco/base/coroutine_mgr.cpp`：`ConnManager`
-- `src/coco/net/coco_socket.cpp`：`st_read` / `st_write` 的封装
-- `src/coco/server/coco_tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
+- `src/coco/net/socket.cpp`：`st_read` / `st_write` 的封装
+- `src/coco/net/tcp_server.cpp`：`TcpServer`，把下文的监听循环和连接协程组装好
 - `src/coco/base/task_group.hpp`、`src/coco/base/task_group.cpp`：`TaskGroup`
 - `src/coco/base/coco_thread.hpp`、`src/coco/base/coco_thread.cpp`：`CocoThread`；`src/coco/base/shutdown.cpp`：跨线程的退出请求
 - `thirdparty/st`：调度、事件系统和上下文切换
@@ -141,7 +141,7 @@ while (!名单为空)
 
 ## 和业务代码的边界
 
-写服务端时，通常不需要继承任何类。`src/coco/server/coco_tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 先停监听协程、关闭监听 socket，再等所有处理函数返回，所以不能在处理函数里调用它；两个协程同时 `Stop()` 时后到的等先到的，任何一个返回时服务都已完全停下；处理函数想结束服务时调用 `CocoShutdown()`，由停在 `ListenAndServe` 或 `CocoWaitForShutdown()` 里的协程去 `Stop()`。
+写服务端时，通常不需要继承任何类。`src/coco/net/tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 先停监听协程、关闭监听 socket，再等所有处理函数返回，所以不能在处理函数里调用它；两个协程同时 `Stop()` 时后到的等先到的，任何一个返回时服务都已完全停下；处理函数想结束服务时调用 `CocoShutdown()`，由停在 `ListenAndServe` 或 `CocoWaitForShutdown()` 里的协程去 `Stop()`。
 
 需要自己控制 accept 或连接对象时，再继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`，循环条件里加上 `ShouldTermCycle()`。`Shutdown` 和监听协程的 `Stop()` 同样要等 `DoCycle()` 返回。
 
@@ -181,6 +181,6 @@ ST 的调度器状态都是 `__thread` 的，每个线程 `st_init()` 一次就�
 - 收到退出请求时，worker 线程的守护协程调用关停钩子，钩子 `Cancel()` 这个组：当时还在跑的函数被中断，之后投递的函数一启动就是中断状态，和 `CocoRun` 的主体一致。线程本身一直运行到 `Stop()`。
 - `Call(fn)` 建一个 pipe，把 `fn` 连同一个持有写端的 `CallDone` 一起投递过去，然后像 `Stop()` 等 done pipe 那样等读端：有运行时就让出协程，没有就阻塞线程，`EINTR` 不算结束，因为 `fn` 可能引用调用方的栈。`CallDone` 在投递的函数销毁时写一个字节并关闭写端。不管函数跑完了，还是线程没启动、被 `Stop()` 丢掉，调用方都会醒。返回值放在一个原子变量里，默认是 `ERROR_THREAD_DISPOSED`，表示函数没跑。多写那一个字节，是为了让 ThreadSanitizer 也能看出唤醒发生在函数之后。
 
-**`TcpServerOptions::threads` 大于 1** 时，`TcpServer` 起这么多个 `CocoThread`。监听协程用 `TcpListener::AcceptTcp()` 拿到连接，挑 `Load()` 最小的 worker，`Release()` 出 fd，投递一个函数过去；worker 上用 `TcpConnFromFd()` 包回来，配置了证书就再包一层 `TlsConn`（TLS 会话不能换线程，所以监听器不再包 `TlsListener`），设好超时后直接在这个函数的协程上调用处理函数；退出请求之后才交接过去的连接，处理函数一开始就是中断状态，第一次读就失败，连接随即关闭。fd 在路上时由一个小对象持有：worker 拿走了就不管，否则（worker 正在停、协程起不来）在析构时关闭。`Stop()` 先停监听协程、关闭监听 socket，再依次 `Stop()` 每个 worker；`ConnCount()` 是所有 worker 的 `Load()` 之和。只有 `TcpListener` 的连接能交接 fd，所以传别的 `StreamListener` 给 `Serve` 时返回 `ERROR_SYSTEM_CONFIG_INVALID`。`HttpServer` 通过 `HttpServeOptions::threads` 传进来；`RtmpServer` 不开，推流和拉流要在同一个线程上才能转发。
+**`TcpServerOptions::threads` 大于 1** 时，`TcpServer` 起这么多个 `CocoThread`。监听协程用 `TcpListener::AcceptTcp()` 拿到连接，挑 `Load()` 最小的 worker，`Release()` 出 fd，投递一个函数过去；worker 上用 `TcpConnFromFd()` 包回来，设好超时，然后直接在这个函数的协程上调用处理函数（处理函数是 `TlsHandler()` 时，`TlsConn` 就建在 worker 上并在这里握手：它的 ST 锁属于建它的线程，TLS 会话不能换线程）；退出请求之后才交接过去的连接，处理函数一开始就是中断状态，第一次读就失败，连接随即关闭。fd 在路上时由一个小对象持有：worker 拿走了就不管，否则（worker 正在停、协程起不来）在析构时关闭。`Stop()` 先停监听协程、关闭监听 socket，再依次 `Stop()` 每个 worker；`ConnCount()` 是所有 worker 的 `Load()` 之和。只有 `TcpListener` 的连接能交接 fd，所以传别的 `StreamListener` 给 `Serve` 时返回 `ERROR_SYSTEM_CONFIG_INVALID`。`HttpServer` 通过 `HttpServeOptions::threads` 传进来；`RtmpServer` 不开，推流和拉流要在同一个线程上才能转发。
 
 **已知的代价**：ST 没有销毁调度器的接口，线程退出时它的事件系统 fd（epoll / kqueue）和空闲协程的栈不会释放。每个 `CocoThread` 在进程结束前占着一个 fd 和少量内存，所以 worker 应该长期存在，不要反复创建。

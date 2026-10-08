@@ -15,11 +15,11 @@
 #include "coco/base/shutdown.hpp"
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/layer7/http/coco_http.hpp"
-#include "coco/net/tls/coco_tls.hpp"
-#include "coco/server/coco_http_server.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/app/http/client.hpp"
+#include "coco/app/http/server.hpp"
+#include "coco/net/tls/conn.hpp"
+#include "coco/net/tcp_server.hpp"
 #include "test_util.hpp"
 
 using namespace coco;
@@ -346,14 +346,27 @@ COTEST(TcpServerThreadsSpreadConnections) {
     CHECK(DialTcp(kLoopback, port, kTimeoutUs, &refused) != COCO_SUCCESS);
 }
 
-// The workers handshake TLS themselves.
+// The workers handshake TLS themselves: a TlsConn cannot change threads.
 COTEST(TcpServerThreadsServeTls) {
     const int port = 19345;
+    std::shared_ptr<TlsConfig> server_cfg;
+    CHECK_EQ(TlsConfig::NewServer(COCO_SOURCE_DIR "/examples/http-server/server.key",
+                                  COCO_SOURCE_DIR "/examples/http-server/server.crt", &server_cfg),
+             COCO_SUCCESS);
+    const std::thread::id accepting = std::this_thread::get_id();
+    std::atomic<int> served_here(0);
+    std::atomic<int> served(0);
     TcpServerOptions opt;
     opt.threads = 2;
-    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
-    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
-    TcpServer server(Echo, opt);
+    TcpServer server(TlsHandler(server_cfg,
+                                [&](StreamConn &conn) {
+                                    ++served;
+                                    if (std::this_thread::get_id() == accepting) {
+                                        ++served_here;
+                                    }
+                                    return Echo(conn);
+                                }),
+                     opt);
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     std::shared_ptr<TlsConfig> cfg;
@@ -368,6 +381,8 @@ COTEST(TcpServerThreadsServeTls) {
         CHECK_EQ(tls.Handshake(), COCO_SUCCESS);
         CHECK(Echoes(&tls, "over tls " + std::to_string(i)));
     }
+    CHECK_EQ(served.load(), 4);
+    CHECK_EQ(served_here.load(), 0);
 }
 
 // A shutdown wakes ListenAndServe on the server's thread, which stops the workers.

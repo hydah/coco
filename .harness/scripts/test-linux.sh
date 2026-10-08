@@ -51,9 +51,15 @@ run_arch() {
             apt-get install -y -qq build-essential cmake perl pkg-config libssl-dev > /dev/null 2>&1; }' ||
         { echo "$arch: installing the toolchain failed"; return 1; }
     # Unpacked over the previous copy: unchanged files keep their times and are not rebuilt.
+    # Files the new copy no longer has are removed, or a renamed source would be globbed
+    # twice.
     docker exec "$name" mkdir -p /src /b &&
         docker cp "$SRC_TAR" "$name:/src.tgz" > /dev/null &&
-        docker exec "$name" tar -xzf /src.tgz -C /src || { echo "$arch: copying the source failed"; return 1; }
+        docker exec "$name" tar -xzf /src.tgz -C /src &&
+        docker exec "$name" bash -c 'cd /src && tar -tzf /src.tgz | sed "s|^\./||" | sort > /tmp/src.list &&
+            find src tests examples cmake -type f | sort | comm -23 - /tmp/src.list | xargs -r rm -f &&
+            find src tests examples cmake -type d -empty -delete' ||
+        { echo "$arch: copying the source failed"; return 1; }
     # QEMU's emulated x86_64 crashes the compiler less with fewer jobs.
     local jobs=""
     [ "$arch" = amd64 ] && [ "$(uname -m)" != x86_64 ] && jobs="JOBS=2"

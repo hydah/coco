@@ -12,11 +12,11 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_dns.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/layer4/coco_udp.hpp"
-#include "coco/net/layer4/dns_message.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/net/dns/resolver.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/net/udp.hpp"
+#include "coco/net/dns/codec/message.hpp"
+#include "coco/net/tcp_server.hpp"
 #include "test_util.hpp"
 
 using namespace coco;

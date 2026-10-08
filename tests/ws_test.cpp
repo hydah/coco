@@ -12,9 +12,10 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/layer7/ws/coco_ws.hpp"
-#include "coco/net/layer7/ws/ws_frame.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/app/ws/client.hpp"
+#include "coco/app/ws/handler.hpp"
+#include "coco/app/ws/codec/frame.hpp"
 #include "test_util.hpp"
 #include "coco/utils/base64.hpp"
 #include "coco/utils/sha1.hpp"

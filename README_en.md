@@ -132,7 +132,7 @@ TcpServer server(Echo, opt);     // HttpServer takes HttpServeOptions::threads
 return server.ListenAndServe("0.0.0.0", 8080);
 ```
 
-The handler is then called on several threads at once, so whatever it shares must be safe to use from all of them (a lock or an atomic). A pthread lock that waits holds up every coroutine of its thread, so keep critical sections short. TLS is set in the options as usual; the workers handshake themselves. `Stop()` and a shutdown request make each worker interrupt its connections, wait for them and end. `RtmpServer` is single-threaded for now: a publisher and its players have to be on one thread to relay.
+The handler is then called on several threads at once, so whatever it shares must be safe to use from all of them (a lock or an atomic). A pthread lock that waits holds up every coroutine of its thread, so keep critical sections short. For TLS wrap the handler: `TcpServer server(TlsHandler(cfg, Echo), opt)` (or call `HttpServer::ListenAndServeTLS`); the handshake runs on the worker, on the connection's own coroutine. `Stop()` and a shutdown request make each worker interrupt its connections, wait for them and end. `RtmpServer` is single-threaded for now: a publisher and its players have to be on one thread to relay.
 
 `CocoThread` is the building block, a kernel thread with a runtime of its own:
 
@@ -328,14 +328,17 @@ The default is a static `libcoco.a`. The `libst.a`, `libssl.a` and `libcrypto.a`
 ## Architecture
 
 ```text
-server     TcpServer, HttpServer                    accept loop + optional TLS + optional worker threads + protocol handler
-layer7  |  HTTP, WebSocket, RTMP                    depends only on StreamConn / StreamDialer
-tls     |  TlsConn, TlsListener, TlsDialer          wraps one StreamConn into another
-layer4     StreamConn etc. interfaces; TcpConn, UdpConn   st_read / st_write / st_accept
-core       coroutines, log, errors, utils           st_thread_create
+server     HttpServer, RtmpServer (server.*)            the protocol's Serve function; TcpServer + optional TlsHandler
+app     |  HTTP, WebSocket, RTMP sessions in app/       depend only on StreamConn / StreamDialer
+tls     |  net/tls/: TlsConn, TlsDialer, TlsHandler     wraps one StreamConn into another
+net        the rest of net/: interfaces, TCP, UDP, TcpServer, DNS resolver   st_read / st_write / st_accept
+codec      each protocol's codec/                       the protocol itself, no connection, no coroutines
+core       coroutines, log, errors, utils               st_thread_create
 ```
 
-`layer7` and `tls` are siblings and don't depend on each other: clients open connections through an injected `StreamDialer`; for https / wss the caller passes `TlsDialer()`. A file may only include headers from its own layer or lower, and sibling layers may not include each other. The `LayerDependencies` ctest case scans `src/` to enforce this. Because layers talk to each other only through `StreamConn`, you can insert a wrapper between any two layers to capture bytes, inject delays or truncate data without touching protocol code.
+Networking code is split by one question: does it help you get a byte stream (`StreamConn`)? If so it is in `net/`: TCP, UDP, `TcpServer`, the DNS resolver that dialing needs (`net/dns/`), and TLS, which turns one byte stream into an encrypted one (`net/tls/`). The application protocols that talk over a byte stream are in `app/`, one directory each, layered inside: `codec/` is the protocol itself, readable and testable with plain bytes; the other files are the session, which drives the codec over one `StreamConn`; `server` holds the per-connection function (`ServeHttpConn`) and the service that `TcpServer` makes of it (`HttpServer`), in one file like Go's `net/http/server.go`. Read a protocol in that order, bottom up.
+
+`net/tls/` is one layer above the rest of `net`, so `TcpServer`, sockets and DNS cannot use it; `app` and `tls` are siblings and don't depend on each other: clients open connections through an injected `StreamDialer`; for https / wss the caller passes `TlsDialer()`. On the server side `TcpServer` doesn't know TLS either, it only calls the handler for each connection; `ListenAndServeTLS` of `HttpServer` / `RtmpServer` wraps that handler in `TlsHandler(cfg, ...)`, which handshakes and then hands the plaintext connection to the protocol, like the `tlsConn.Handshake()` at the start of Go's `(*conn).serve`. A file may only include headers from its own layer or lower, and sibling layers may not include each other; a codec may not include `base/` or ST, and a protocol's codec is for that protocol only. The `LayerDependencies` ctest case scans `src/` to enforce these rules. Because layers talk to each other only through `StreamConn`, you can insert a wrapper between any two layers to capture bytes, inject delays or truncate data without touching protocol code.
 
 Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`, `md5` / `sha1` / `base64` and `base/shutdown.hpp` are internal and not installed):
 
@@ -347,14 +350,13 @@ src/coco/
 ├── common/          error codes
 ├── log/             logging
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
-├── net/
-│   ├── layer4/      TCP, UDP, DNS resolution (Resolver, LookupHost)
-│   ├── tls/         TlsConfig, TlsConn, TlsListener, TlsDialer
-│   └── layer7/
-│       ├── http/    messages, HttpServeMux, ServeHttpConn, HttpClient
-│       ├── ws/      frame codec, WebSocketConn, WebSocketClient, WebSocketHandler
-│       └── rtmp/    handshake, chunks, AMF0, RtmpConn, RtmpClient
-└── server/          TcpServer, HttpServer, RtmpServer
+├── net/             getting a byte stream: StreamConn etc. interfaces, TCP, UDP, TcpServer
+│   ├── dns/         codec/: messages, resolv.conf and hosts, answers; resolver: Resolver, LookupHost
+│   └── tls/         config: TlsConfig; conn: TlsConn, TlsDialer, TlsListener, TlsHandler
+└── app/             application protocols over a byte stream
+    ├── http/        codec/: headers, message parsing and body framing, URLs; handler, response_writer, mux, client (HttpClient), server (ServeHttpConn, HttpServer)
+    ├── ws/          codec/: frames, handshake; conn (WebSocketConn), client (WebSocketClient), handler (WebSocketHandler)
+    └── rtmp/        codec/: handshake, chunks, AMF0, commands, URLs; conn (RtmpConn), client (RtmpClient), server (ServeRtmpConn, RtmpServer)
 ```
 
 ## Documentation

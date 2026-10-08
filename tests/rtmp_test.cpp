@@ -5,11 +5,11 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer7/rtmp/coco_rtmp.hpp"
-#include "coco/net/layer7/rtmp/rtmp_amf0.hpp"
-#include "coco/net/layer7/rtmp/rtmp_chunk.hpp"
-#include "coco/net/layer7/rtmp/rtmp_handshake.hpp"
-#include "coco/server/coco_rtmp_server.hpp"
+#include "coco/app/rtmp/client.hpp"
+#include "coco/app/rtmp/server.hpp"
+#include "coco/app/rtmp/codec/amf0.hpp"
+#include "coco/app/rtmp/codec/chunk.hpp"
+#include "coco/app/rtmp/codec/handshake.hpp"
 #include "coco/utils/io.hpp"
 #include "test_util.hpp"
 

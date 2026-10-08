@@ -1,4 +1,4 @@
-# One library, libcoco. The layers inside it (core -> l4 -> tls | l7 -> server) are kept
+# One library, libcoco. The layers inside it (core -> codec -> net -> tls | app -> server) are kept
 # apart by the include rules that tests/LayerDependencies checks (cmake/check_layers.cmake).
 file(GLOB_RECURSE COCO_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/coco/*.cpp)
 # macOS archives and some volumes leave "._name.cpp" resource-fork files beside the sources.

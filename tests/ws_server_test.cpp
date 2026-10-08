@@ -8,12 +8,14 @@
 
 #include "coco/coco_api.h"
 #include "coco/common/error.hpp"
-#include "coco/net/layer4/coco_tcp.hpp"
-#include "coco/net/layer7/ws/coco_ws.hpp"
-#include "coco/net/layer7/ws/ws_frame.hpp"
-#include "coco/net/tls/coco_tls.hpp"
-#include "coco/server/coco_http_server.hpp"
-#include "coco/server/coco_tcp_server.hpp"
+#include "coco/net/tcp.hpp"
+#include "coco/app/ws/client.hpp"
+#include "coco/app/ws/handler.hpp"
+#include "coco/app/ws/codec/frame.hpp"
+#include "coco/net/tls/conn.hpp"
+#include "coco/app/http/mux.hpp"
+#include "coco/app/http/server.hpp"
+#include "coco/net/tcp_server.hpp"
 #include "test_util.hpp"
 
 using namespace coco;
@@ -363,10 +365,12 @@ COTEST(WsServerOverTls) {
     Events ev;
     HttpServeMux mux;
     mux.Handle("/ws", ev.Handler());
-    TcpServerOptions opt;
-    opt.tls_key_file = COCO_SOURCE_DIR "/examples/http-server/server.key";
-    opt.tls_crt_file = COCO_SOURCE_DIR "/examples/http-server/server.crt";
-    TcpServer server([&mux](StreamConn &conn) { return ServeHttpConn(conn, &mux); }, opt);
+    std::shared_ptr<TlsConfig> cfg;
+    CHECK_EQ(TlsConfig::NewServer(COCO_SOURCE_DIR "/examples/http-server/server.key",
+                                  COCO_SOURCE_DIR "/examples/http-server/server.crt", &cfg),
+             COCO_SUCCESS);
+    TcpServer server(
+        TlsHandler(cfg, [&mux](StreamConn &conn) { return ServeHttpConn(conn, &mux); }));
     CHECK_EQ(server.Start(kLoopback, port), COCO_SUCCESS);
 
     WebSocketClient ws;

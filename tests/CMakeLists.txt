@@ -49,7 +49,9 @@ set(COCO_TEST_CASES
     TcpServerDeletedWhileAccepting
     TcpServerHandlerSeesShouldStop
     TcpServerServesTls
-    TcpServerRejectsBadTlsFiles
+    TlsHandlerFailureSkipsNext
+    TlsHandlerTimeoutsBoundHandshake
+    TlsHandlerStopInterruptsHandshake
     TcpServerServeTwiceFails
     TcpServerIpv6
     WsEncodeLengthForms
@@ -80,6 +82,10 @@ set(COCO_TEST_CASES
     TlsDialerOverAnyDialer
     TlsHandshakesOnFirstUse
     TlsSilentPeerDoesNotBlockAccept
+    TlsListenerServesTls
+    HttpServerServesTls
+    HttpServerRejectsBadTlsFiles
+    RtmpServerRejectsBadTlsFiles
     HttpSmallResponseHasContentLength
     HttpLargeResponseIsChunked
     HttpPipelinedRequests

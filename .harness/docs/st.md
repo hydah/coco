@@ -170,7 +170,8 @@ _st_thread_main()                   ST 的入口
     CoCoroutine::cycle()
       生成协程 ID（CoroutineContext）
       handler->Cycle()              虚函数 → ConnRoutine::Cycle
-        DoCycle()                   虚函数 → Session::DoCycle：可选 TLS 握手，然后调用处理函数
+        DoCycle()                   虚函数 → Session::DoCycle：设好超时，然后调用处理函数
+          [TlsHandler 握手]          HTTPS 时处理函数是 TlsHandler，先握手
           ServeHttpConn(conn, handler)  真正的业务
         按返回值打日志，return
     记录错误码，cycle_done = true
