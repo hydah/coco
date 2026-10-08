@@ -7,4 +7,5 @@
 - [State Threads 与 src/coco/base 的实现](st.md)：ST 的创建、切换、I/O 让出、中断和退出，`Cycle()` 的调用链，资源释放的两条路径，以及为什么还需要 `ConnManager`。
 - [TLS 握手与读写](tls.md)：用内存 BIO 把 OpenSSL 接进协程 socket，握手循环如何同时覆盖 TLS 1.2 和 TLS 1.3。
 - [协议规划](protocols.md)：接下来要加的协议、顺序、各自落在哪一层和完成标准；DNS 已完成。
+- [RUDP](rudp.md)：UDP 上的最小可靠字节流：线上格式、状态机、重传与窗口、关闭规则、端点和泵协程的所有权、错误码和测试计划。
 - [测试要求](../testing.md)：macOS、Linux 和不同架构都要跑完的检查；`.harness/scripts/` 里的脚本把它们自动跑完。

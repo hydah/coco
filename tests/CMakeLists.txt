@@ -12,6 +12,7 @@ add_executable(coco_tests
     thread_test.cpp
     task_group_test.cpp
     dns_test.cpp
+    rudp_test.cpp
 )
 # The tests call ST directly. They only take its header: a static libcoco brings libst.a
 # along, and a shared one contains it, so linking st here would make a second scheduler.
@@ -176,6 +177,42 @@ set(COCO_TEST_CASES
     DnsLookupDoesNotBlockTheThread
     DnsLookupStopsWhenInterrupted
     DnsDialTcpByName
+    RudpPacketRoundTrip
+    RudpPacketRejectsMalformed
+    RudpControlHandshakeLosses
+    RudpControlTransfersInOrder
+    RudpControlRecoversLoss
+    RudpControlRecoversBurstLoss
+    RudpControlCongestionWindow
+    RudpControlKarnAndBackoff
+    RudpControlZeroWindowProbe
+    RudpControlLinkTimeoutBoundary
+    RudpControlSeqWraparound
+    RudpControlCloseRules
+    RudpControlRejectsOutOfWindow
+    RudpEchoes
+    RudpThroughLossyRelay
+    RudpDialTimesOut
+    RudpDialInterrupted
+    RudpReadTimeoutKeepsConn
+    RudpReadInterruptedKeepsData
+    RudpWriteBlocksOnWindow
+    RudpCloseBothOrders
+    RudpCloseDeliversAllThroughLoss
+    RudpCloseTimesOutWhenPeerGone
+    RudpServerStopResetsConns
+    RudpListenerDestroyedKeepsAccepted
+    RudpListenerBacklog
+    RudpPumpYieldsUnderFlood
+    RudpTcpServerThreadsRejected
+    RudpHttpOverRudp
+    RudpTlsOverRudp
+    RudpTimeoutsAreNotEarly
+    RudpControlCloseBoundedByLinkTimeout
+    RudpControlRingNotPowerOfTwo
+    RudpControlZeroWindowIsNotCongestion
+    RudpControlNothingAfterFin
+    RudpReadEndsWhenClosed
 )
 foreach(case ${COCO_TEST_CASES})
     add_test(NAME ${case} COMMAND coco_tests ${case})

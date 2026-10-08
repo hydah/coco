@@ -71,7 +71,8 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/coco
     PATTERN "*.h"
     PATTERN "*.hpp"
     REGEX "/utils/(utils|md5|sha1|base64)\\.hpp$" EXCLUDE
-    REGEX "/base/shutdown\\.hpp$" EXCLUDE)
+    REGEX "/base/shutdown\\.hpp$" EXCLUDE
+    REGEX "/net/rudp/endpoint\\.hpp$" EXCLUDE)
 
 install(EXPORT cocoTargets NAMESPACE coco:: DESTINATION ${COCO_CMAKE_DIR})
 

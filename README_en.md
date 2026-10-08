@@ -4,12 +4,13 @@ English | [中文](README.md)
 
 coco is a C++11 networking library built on [State Threads](https://github.com/hydah/state-threads) (ST). Every connection runs in its own coroutine and you write plain synchronous code: when `Read` has no data, the current coroutine yields, the event loop runs other coroutines, and control comes back once data arrives. No callbacks, no hand-written state machines.
 
-It supports TCP, UDP, TLS, HTTP/1.1, WebSocket and RTMP, resolves host names with its own DNS resolver inside the coroutine, and runs on Linux (epoll) and macOS (kqueue).
+It supports TCP, UDP, RUDP (a reliable byte stream over UDP), TLS, HTTP/1.1, WebSocket and RTMP, resolves host names with its own DNS resolver inside the coroutine, and runs on Linux (epoll) and macOS (kqueue).
 
 ## Features
 
 - **Synchronous style, asynchronous execution**: one kernel thread per process running many coroutines, 64KB stack each by default.
 - **Protocols**: TCP / UDP, TLS 1.2 / 1.3 (server and client), HTTP/1.1 (keep-alive, chunked, routing), WebSocket (`ws://` and `wss://`, server and client), RTMP (`rtmp://` and `rtmps://`, publish and play).
+- **RUDP**: an ordered, reliable byte stream over UDP with flow control and minimal (AIMD) congestion control. Give a `RudpListener` to `TcpServer` and `RudpDialer()` to `HttpClient` / `TlsDialer`, and HTTP, WebSocket, RTMP and TLS run over it unchanged.
 - **Name resolution that doesn't stall the thread**: `DialTcp` and every client use the bundled DNS resolver (reads `/etc/resolv.conf` and `/etc/hosts`, asks for A and AAAA together, caches by TTL). Waiting for an answer only suspends the calling coroutine, where `getaddrinfo` would stop the whole thread.
 - **Layered by protocol**: one directory per layer, each depending only on the layers below. HTTP and WebSocket only see a `StreamConn` and don't care whether TCP or TLS is underneath. The layering rule is enforced by a test.
 - **Managed connection lifecycle**: `TcpServer` handles accept, the TLS handshake, connection cleanup and shutdown. You only write a handler function.
@@ -259,7 +260,7 @@ Full sources are in [`examples/`](examples).
 
 ## Example programs
 
-Addresses and ports are hardcoded in each `main`; command-line arguments are ignored (except `ws_client`, which accepts a URL, and `lookup`, which takes the host names to resolve).
+Addresses and ports are hardcoded in each `main`; command-line arguments are ignored (except `ws_client`, which accepts a URL, `lookup`, which takes the host names to resolve, and the two RUDP examples, which take a port).
 
 | Program | Address | Notes |
 | --- | --- | --- |
@@ -269,6 +270,7 @@ Addresses and ports are hardcoded in each `main`; command-line arguments are ign
 | `ws_server` / `ws_client` | `0.0.0.0:9083/echo` | WebSocket echo; `websocat ws://127.0.0.1:9083/echo` works too |
 | `lookup` | the system's DNS servers | resolves each host name on a coroutine of its own, all at once, e.g. `lookup example.com localhost` |
 | `rtmp_server` | `0.0.0.0:1935/{app}/{stream}` | RTMP live relay: one publisher and any number of players on the same path |
+| `rudp_echo_server` / `rudp_echo_client` | `127.0.0.1:9000` (UDP) | RUDP echo: the server is `TcpServer` + `RudpListener`; the client echoes 1MB and prints resends, SRTT and the congestion window |
 
 ```bash
 cd examples/http-server
@@ -331,16 +333,16 @@ The default is a static `libcoco.a`. The `libst.a`, `libssl.a` and `libcrypto.a`
 server     HttpServer, RtmpServer (server.*)            the protocol's Serve function; TcpServer + optional TlsHandler
 app     |  HTTP, WebSocket, RTMP sessions in app/       depend only on StreamConn / StreamDialer
 tls     |  net/tls/: TlsConn, TlsDialer, TlsHandler     wraps one StreamConn into another
-net        the rest of net/: interfaces, TCP, UDP, TcpServer, DNS resolver   st_read / st_write / st_accept
+net        the rest of net/: interfaces, TCP, UDP, RUDP, TcpServer, DNS resolver   st_read / st_write / st_accept
 codec      each protocol's codec/                       the protocol itself, no connection, no coroutines
 core       coroutines, log, errors, utils               st_thread_create
 ```
 
-Networking code is split by one question: does it help you get a byte stream (`StreamConn`)? If so it is in `net/`: TCP, UDP, `TcpServer`, the DNS resolver that dialing needs (`net/dns/`), and TLS, which turns one byte stream into an encrypted one (`net/tls/`). The application protocols that talk over a byte stream are in `app/`, one directory each, layered inside: `codec/` is the protocol itself, readable and testable with plain bytes; the other files are the session, which drives the codec over one `StreamConn`; `server` holds the per-connection function (`ServeHttpConn`) and the service that `TcpServer` makes of it (`HttpServer`), in one file like Go's `net/http/server.go`. Read a protocol in that order, bottom up.
+Networking code is split by one question: does it help you get a byte stream (`StreamConn`)? If so it is in `net/`: TCP, UDP, RUDP, which makes a byte stream out of UDP (`net/rudp/`), `TcpServer`, the DNS resolver that dialing needs (`net/dns/`), and TLS, which turns one byte stream into an encrypted one (`net/tls/`). The application protocols that talk over a byte stream are in `app/`, one directory each, layered inside: `codec/` is the protocol itself, readable and testable with plain bytes; the other files are the session, which drives the codec over one `StreamConn`; `server` holds the per-connection function (`ServeHttpConn`) and the service that `TcpServer` makes of it (`HttpServer`), in one file like Go's `net/http/server.go`. Read a protocol in that order, bottom up.
 
 `net/tls/` is one layer above the rest of `net`, so `TcpServer`, sockets and DNS cannot use it; `app` and `tls` are siblings and don't depend on each other: clients open connections through an injected `StreamDialer`; for https / wss the caller passes `TlsDialer()`. On the server side `TcpServer` doesn't know TLS either, it only calls the handler for each connection; `ListenAndServeTLS` of `HttpServer` / `RtmpServer` wraps that handler in `TlsHandler(cfg, ...)`, which handshakes and then hands the plaintext connection to the protocol, like the `tlsConn.Handshake()` at the start of Go's `(*conn).serve`. A file may only include headers from its own layer or lower, and sibling layers may not include each other; a codec may not include `base/` or ST, and a protocol's codec is for that protocol only. The `LayerDependencies` ctest case scans `src/` to enforce these rules. Because layers talk to each other only through `StreamConn`, you can insert a wrapper between any two layers to capture bytes, inject delays or truncate data without touching protocol code.
 
-Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`, `md5` / `sha1` / `base64` and `base/shutdown.hpp` are internal and not installed):
+Source layout under `src/coco/`, installed as `include/coco/` (`utils/utils.hpp`, `md5` / `sha1` / `base64`, `base/shutdown.hpp` and `net/rudp/endpoint.hpp` are internal and not installed):
 
 ```text
 src/coco/
@@ -352,6 +354,7 @@ src/coco/
 ├── utils/           IoReader / IoWriter, BufReader, base64 / sha1 / md5
 ├── net/             getting a byte stream: StreamConn etc. interfaces, TCP, UDP, TcpServer
 │   ├── dns/         codec/: messages, resolv.conf and hosts, answers; resolver: Resolver, LookupHost
+│   ├── rudp/        codec/: packets, the protocol state machine (RudpControl); endpoint (internal); conn: RudpConn, RudpListener, DialRudp, RudpDialer
 │   └── tls/         config: TlsConfig; conn: TlsConn, TlsDialer, TlsListener, TlsHandler
 └── app/             application protocols over a byte stream
     ├── http/        codec/: headers, message parsing and body framing, URLs; handler, response_writer, mux, client (HttpClient), server (ServeHttpConn, HttpServer)
@@ -369,6 +372,7 @@ The design documents are written in Chinese:
 - [State Threads and src/coco/base](.harness/docs/st.md): ST context switching, I/O yielding, interruption and exit
 - [TLS handshake and I/O](.harness/docs/tls.md): plugging OpenSSL into coroutine sockets with memory BIOs
 - [Protocol roadmap](.harness/docs/protocols.md): the protocols to add next, in what order, and when each counts as done
+- [RUDP](.harness/docs/rudp.md): wire format, state machine, retransmission and congestion window, close rules, who owns the endpoint and its pump coroutine
 
 ## Tests
 
@@ -378,7 +382,7 @@ cd build && ctest --output-on-failure        # if already built
 ./build/bin/coco_tests ConnStopDoesNotWait   # run a single case
 ```
 
-The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, the blocking `ListenAndServe` and signal shutdown, TLS, WebSocket framing and handshakes, wss, the RTMP handshake and publish/play, DNS messages and resolution (against a fake name server on the loopback, never the internet), and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19360.
+The tests need no external framework. Each case runs as its own process with a 10-second timeout. They cover coroutine and connection lifecycles, `TcpServer` shutdown, the blocking `ListenAndServe` and signal shutdown, TLS, WebSocket framing and handshakes, wss, the RTMP handshake and publish/play, DNS messages and resolution (against a fake name server on the loopback, never the internet), the RUDP state machine (loss, reordering and timeouts on a fake clock) and RUDP connections (through a lossy relay, shutdown, HTTP and TLS over RUDP), and the layer dependency check. Cases listen on `127.0.0.1` ports 19181–19360 and 19401–19425.
 
 ## Platforms
 
@@ -397,6 +401,7 @@ Linux ARM64 does not build at the moment: in the bundled State Threads (`thirdpa
 - DNS resolution only uses `/etc/hosts` and the servers in `/etc/resolv.conf`: no other `nsswitch.conf` sources (mDNS, LDAP), no macOS scoped resolvers (VPN split DNS), and no EDNS0 / DNSSEC / DoH.
 - A WebSocket message is capped at 4MB (`MAX_WS_PACKET`).
 - An RTMP message is capped at 16777215 bytes (`kRtmpMaxMessage`). No RTMPE, and aggregate messages are not unpacked.
+- RUDP's congestion control is a minimal AIMD (no pacing); it has no path MTU discovery (a fixed 1200-byte MSS), keepalive, encryption or authentication, nor protection against reflection; an endpoint stays on one thread. Meant for LANs and controlled links, not for direct exposure to the internet.
 
 ## License
 

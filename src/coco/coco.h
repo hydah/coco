@@ -1,7 +1,7 @@
 #pragma once
 
-// Everything a program needs: the runtime and its threads, TCP and UDP, TLS, the HTTP
-// client and server, WebSocket and RTMP. Every name is in namespace coco; the macros start with COCO_ or coco_.
+// Everything a program needs: the runtime and its threads, TCP, UDP and RUDP, TLS, the
+// HTTP client and server, WebSocket and RTMP. Every name is in namespace coco; the macros start with COCO_ or coco_.
 
 // IWYU pragma: begin_exports
 #include "coco/base/coco_thread.hpp"
@@ -13,6 +13,7 @@
 #include "coco/net/tcp.hpp"
 #include "coco/net/tcp_server.hpp"
 #include "coco/net/udp.hpp"
+#include "coco/net/rudp/conn.hpp"
 #include "coco/net/tls/conn.hpp"
 #include "coco/app/http/client.hpp"
 #include "coco/app/http/mux.hpp"

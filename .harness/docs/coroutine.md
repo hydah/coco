@@ -141,7 +141,7 @@ while (!名单为空)
 
 ## 和业务代码的边界
 
-写服务端时，通常不需要继承任何类。`src/coco/net/tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 先停监听协程、关闭监听 socket，再等所有处理函数返回，所以不能在处理函数里调用它；两个协程同时 `Stop()` 时后到的等先到的，任何一个返回时服务都已完全停下；处理函数想结束服务时调用 `CocoShutdown()`，由停在 `ListenAndServe` 或 `CocoWaitForShutdown()` 里的协程去 `Stop()`。
+写服务端时，通常不需要继承任何类。`src/coco/net/tcp_server.hpp` 的 `TcpServer` 已经包含上面的监听循环、连接的 `ConnRoutine` 和 `ConnManager`，业务只提供一个处理函数 `int(StreamConn &conn)`。`TcpServer` 的连接协程在 `DoCycle()` 末尾就释放 `StreamConn`，而不是等 `delete handler`：`coroutine_fun` 在 `Cycle()` 返回后先清掉线程私有数据里的 `CoCoroutine *`，那之后析构的对象看到的 `CocoShouldStop()` 总是 false。连接的析构函数可能要等对端（RUDP 的关闭握手），停止时它必须看得到停止请求，否则 `Stop()` 会被拖到链路超时。`RudpServerStopResetsConns` 在改动前就因为这一点失败（客户端读到 EOF 而不是 RST）。处理函数运行在连接协程上，里面的 `Read` / `Write` 按同步代码来写，该让出的时候 ST 会让出。收到中断后，处理函数必须尽快返回：I/O 出错时不要吞掉错误继续阻塞；不做 I/O 的循环用 `CocoShouldStop()` 判断，它对当前协程的作用和 `ShouldTermCycle()` 相同。`TcpServer::Stop()` 先停监听协程、关闭监听 socket，再等所有处理函数返回，所以不能在处理函数里调用它；两个协程同时 `Stop()` 时后到的等先到的，任何一个返回时服务都已完全停下；处理函数想结束服务时调用 `CocoShutdown()`，由停在 `ListenAndServe` 或 `CocoWaitForShutdown()` 里的协程去 `Stop()`。
 
 需要自己控制 accept 或连接对象时，再继承 `ConnRoutine`，实现 `DoCycle()` 和 `GetRemoteAddr()`，循环条件里加上 `ShouldTermCycle()`。`Shutdown` 和监听协程的 `Stop()` 同样要等 `DoCycle()` 返回。
 

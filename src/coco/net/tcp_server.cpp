@@ -136,7 +136,13 @@ int TcpServer::ServeConn(StreamConn &conn) {
     return handler_(conn);
 }
 
-int TcpServer::Session::DoCycle() { return server_->ServeConn(*conn_); }
+int TcpServer::Session::DoCycle() {
+    int ret = server_->ServeConn(*conn_);
+    // Freed while the coroutine still runs its cycle, so a destructor that would wait for
+    // the peer (TLS close_notify, an RUDP close) sees CocoShouldStop() after a Stop().
+    conn_.reset();
+    return ret;
+}
 
 TcpServer::TcpServer(StreamHandler handler, TcpServerOptions options)
     : handler_(handler), options_(options) {}

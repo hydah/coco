@@ -135,6 +135,12 @@ constexpr int ERROR_DNS_PROTOCOL = 4073;
 constexpr int ERROR_DNS_BAD_NAME = 4074;
 // no name server answered within the timeout and attempts.
 constexpr int ERROR_DNS_TIMEOUT = 4075;
+// the RUDP peer refused the connection or no longer has it (RST).
+constexpr int ERROR_RUDP_RESET = 4081;
+// the RUDP handshake got no answer, or the peer stayed silent past link_timeout_us.
+constexpr int ERROR_RUDP_TIMEOUT = 4082;
+// the RUDP connection was closed or aborted on this side.
+constexpr int ERROR_RUDP_CLOSED = 4083;
 
 bool coco_is_client_gracefully_close(int error_code);
 

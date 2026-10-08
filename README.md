@@ -4,12 +4,13 @@
 
 coco 是一个基于 [State Threads](https://github.com/hydah/state-threads)（ST）的 C++11 网络库。每条连接跑在自己的协程里，代码按同步方式写：`Read` 没有数据时，当前协程让出，事件循环去跑别的协程，数据到了再切回来。不需要回调，也不需要手写状态机。
 
-支持 TCP、UDP、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由自带的 DNS 解析器在协程里解析，运行在 Linux（epoll）和 macOS（kqueue）上。
+支持 TCP、UDP、RUDP（UDP 上的可靠字节流）、TLS、HTTP/1.1、WebSocket 和 RTMP，主机名由自带的 DNS 解析器在协程里解析，运行在 Linux（epoll）和 macOS（kqueue）上。
 
 ## 特性
 
 - **同步写法，异步执行**：一个进程一个内核线程，上面跑多条协程，默认栈 64KB。
 - **协议齐全**：TCP / UDP、TLS 1.2 / 1.3（服务端和客户端）、HTTP/1.1（keep-alive、chunked、路由）、WebSocket（`ws://` 和 `wss://`，服务端和客户端）、RTMP（`rtmp://` 和 `rtmps://`，推流和拉流）。
+- **RUDP**：UDP 上有序、可靠、带流量控制和最简拥塞控制（AIMD）的字节流。`RudpListener` 交给 `TcpServer`、`RudpDialer()` 交给 `HttpClient` / `TlsDialer`，HTTP、WebSocket、RTMP、TLS 不改代码就能跑在上面。
 - **解析域名不卡线程**：`DialTcp` 和各个客户端用自带的 DNS 解析器（读 `/etc/resolv.conf` 和 `/etc/hosts`，A / AAAA 同时查，按 TTL 缓存），等待应答时只让出当前协程，不像 `getaddrinfo` 那样让整个线程停住。
 - **按协议分层**：每层一个目录，只能依赖下层。HTTP 和 WebSocket 只认 `StreamConn`，不关心下面是 TCP 还是 TLS。分层规则由测试强制检查。
 - **连接生命周期由框架管理**：`TcpServer` 负责 accept、TLS 握手、连接回收和关停，业务只写一个处理函数。
@@ -259,7 +260,7 @@ pub.WriteMessage(msg);
 
 ## 示例程序
 
-示例的地址和端口写死在各自的 `main` 里，不读命令行参数（`ws_client` 可以传 URL，`lookup` 传要解析的主机名）。
+示例的地址和端口写死在各自的 `main` 里，不读命令行参数（`ws_client` 可以传 URL，`lookup` 传要解析的主机名，RUDP 的两个示例可以传端口）。
 
 | 程序 | 地址 | 说明 |
 | --- | --- | --- |
@@ -269,6 +270,7 @@ pub.WriteMessage(msg);
 | `ws_server` / `ws_client` | `0.0.0.0:9083/echo` | WebSocket 回显，也可以用 `websocat ws://127.0.0.1:9083/echo` 测 |
 | `rtmp_server` | `0.0.0.0:1935/{app}/{stream}` | RTMP 直播转发，同一路径上一个推流、多个拉流 |
 | `lookup` | 系统配置的 DNS 服务器 | 每个主机名一条协程，同时解析，例如 `lookup example.com localhost` |
+| `rudp_echo_server` / `rudp_echo_client` | `127.0.0.1:9000`（UDP） | RUDP 回显：服务端是 `TcpServer` + `RudpListener`，客户端回显 1MB 后打印重传次数、SRTT 和拥塞窗口 |
 
 ```bash
 cd examples/http-server
@@ -331,16 +333,16 @@ target_link_libraries(app PRIVATE coco::coco)
 server     HttpServer、RtmpServer（server.*）      协议的 Serve 函数，TcpServer + 可选 TlsHandler
 app     |  app/ 下 HTTP、WebSocket、RTMP 的会话     只依赖 StreamConn / StreamDialer
 tls     |  net/tls/：TlsConn、TlsDialer、TlsHandler 把一个 StreamConn 包成另一个 StreamConn
-net        net/ 的其余部分：接口、TCP、UDP、TcpServer、DNS   st_read / st_write / st_accept
+net        net/ 的其余部分：接口、TCP、UDP、RUDP、TcpServer、DNS   st_read / st_write / st_accept
 codec      各协议的 codec/                          协议本身，不碰连接和协程
 core       协程、日志、错误码、工具                 st_thread_create
 ```
 
-网络代码分两个目录，只看一个问题：它是不是在帮你拿到一条字节流（`StreamConn`）。是的放 `net/`：TCP、UDP、`TcpServer`、拨号前要用的 DNS（`net/dns/`），以及把字节流变成加密字节流的 TLS（`net/tls/`）。在字节流上说话的应用层协议放 `app/`，每个协议一个目录，内部再分三层：`codec/` 是协议本身，用一段字节就能读懂和测试；目录里的其余文件是会话，在一条 `StreamConn` 上驱动 codec；`server` 先是逐连接服务的函数（`ServeHttpConn`），再用 `TcpServer` 组装成服务（`HttpServer`），和 Go 的 `net/http/server.go` 一样放在一个文件里。读一个协议就按这个顺序往上看。
+网络代码分两个目录，只看一个问题：它是不是在帮你拿到一条字节流（`StreamConn`）。是的放 `net/`：TCP、UDP、在 UDP 上做出字节流的 RUDP（`net/rudp/`）、`TcpServer`、拨号前要用的 DNS（`net/dns/`），以及把字节流变成加密字节流的 TLS（`net/tls/`）。在字节流上说话的应用层协议放 `app/`，每个协议一个目录，内部再分三层：`codec/` 是协议本身，用一段字节就能读懂和测试；目录里的其余文件是会话，在一条 `StreamConn` 上驱动 codec；`server` 先是逐连接服务的函数（`ServeHttpConn`），再用 `TcpServer` 组装成服务（`HttpServer`），和 Go 的 `net/http/server.go` 一样放在一个文件里。读一个协议就按这个顺序往上看。
 
 `net/tls/` 在分层上比 `net` 的其余部分高一层，`TcpServer`、socket、DNS 都不能用它；`app` 和 `tls` 平级、互不依赖：客户端通过注入的 `StreamDialer` 建连，https / wss 时由调用方传 `TlsDialer()`；服务端的 `TcpServer` 也不认识 TLS，只对每条连接调用处理函数，`HttpServer` / `RtmpServer` 的 `ListenAndServeTLS` 把处理函数换成 `TlsHandler(cfg, …)`：先握手，再把明文连接交给协议，对应 Go 的 `(*conn).serve` 开头那次 `tlsConn.Handshake()`。一个文件只能 include 同一层或更低层的头文件，平级层之间也不能互相 include；codec 不能 include `base/` 和 ST，一个协议的 codec 只给本协议用。ctest 里的 `LayerDependencies` 用例会扫描 `src/` 检查这些规则。因为层与层之间只通过 `StreamConn` 交互，在中间插一层包装就能抓包、注入延迟或截断，而不用改协议代码。
 
-`src/coco/` 目录布局，安装后就是 `include/coco/`（`utils/utils.hpp`、`md5` / `sha1` / `base64`、`base/shutdown.hpp` 只在库内部用，不安装）：
+`src/coco/` 目录布局，安装后就是 `include/coco/`（`utils/utils.hpp`、`md5` / `sha1` / `base64`、`base/shutdown.hpp`、`net/rudp/endpoint.hpp` 只在库内部用，不安装）：
 
 ```text
 src/coco/
@@ -352,6 +354,7 @@ src/coco/
 ├── utils/           IoReader / IoWriter、BufReader、base64 / sha1 / md5
 ├── net/             拿到字节流：StreamConn 等接口、TCP、UDP、TcpServer
 │   ├── dns/         codec/：报文、resolv.conf 与 hosts、应答；resolver：Resolver、LookupHost
+│   ├── rudp/        codec/：报文、协议状态机（RudpControl）；endpoint（内部）；conn：RudpConn、RudpListener、DialRudp、RudpDialer
 │   └── tls/         config：TlsConfig；conn：TlsConn、TlsDialer、TlsListener、TlsHandler
 └── app/             在字节流上说话的应用层协议
     ├── http/        codec/：头部、报文解析与 body 分帧、URL；handler、response_writer、mux、client（HttpClient）、server（ServeHttpConn、HttpServer）
@@ -367,6 +370,7 @@ src/coco/
 - [State Threads 与 src/coco/base 的实现](.harness/docs/st.md)：ST 的切换、I/O 让出、中断与退出
 - [TLS 握手与读写](.harness/docs/tls.md)：用内存 BIO 把 OpenSSL 接进协程 socket
 - [协议规划](.harness/docs/protocols.md)：接下来要加的协议、顺序和完成标准
+- [RUDP](.harness/docs/rudp.md)：线上格式、状态机、重传与拥塞窗口、关闭规则、端点和泵协程的所有权
 
 ## 测试
 
@@ -376,7 +380,7 @@ cd build && ctest --output-on-failure        # 已构建时直接跑
 ./build/bin/coco_tests ConnStopDoesNotWait   # 单独跑一个用例
 ```
 
-测试不依赖外部框架，每个用例是一个独立进程，超时 10 秒。覆盖协程与连接生命周期、`TcpServer` 关停、阻塞式 `ListenAndServe` 与信号退出、TLS、WebSocket 帧编解码和握手、wss、RTMP 握手与推拉流、DNS 报文与解析（对着本机的假 DNS 服务器，不访问外网），以及分层依赖检查。用例会占用 `127.0.0.1` 的 19181–19360 端口。
+测试不依赖外部框架，每个用例是一个独立进程，超时 10 秒。覆盖协程与连接生命周期、`TcpServer` 关停、阻塞式 `ListenAndServe` 与信号退出、TLS、WebSocket 帧编解码和握手、wss、RTMP 握手与推拉流、DNS 报文与解析（对着本机的假 DNS 服务器，不访问外网），RUDP 的状态机（假时钟下的丢包、乱序、超时）和本机连接（经过丢包中继、关停、HTTP 和 TLS over RUDP），以及分层依赖检查。用例会占用 `127.0.0.1` 的 19181–19360 和 19401–19425 端口。
 
 ## 平台
 
@@ -395,6 +399,7 @@ Linux ARM64 目前不能编译：自带的 State Threads（`thirdparty/st`）的
 - DNS 解析只看 `/etc/hosts` 和 `/etc/resolv.conf` 里的服务器：不走 `nsswitch.conf` 的其他来源（mDNS、LDAP），macOS 上不认 VPN 的分域解析（scoped resolver），也没有 EDNS0 / DNSSEC / DoH。
 - WebSocket 单条消息上限 4MB（`MAX_WS_PACKET`）。
 - RTMP 单条消息上限 16777215 字节（`kRtmpMaxMessage`）。没有 RTMPE，也不拆 aggregate 消息。
+- RUDP 的拥塞控制只是最简 AIMD（没有 pacing），没有路径 MTU 探测（固定 MSS 1200 字节）、保活、加密认证和防反射放大，端点只能在一个线程上用；适合局域网和受控链路，不要直接暴露在公网上。
 
 ## 许可证
 

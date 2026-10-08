@@ -1,0 +1,2 @@
+coco_example(rudp_echo_server rudp_echo_server.cpp)
+coco_example(rudp_echo_client rudp_echo_client.cpp)
